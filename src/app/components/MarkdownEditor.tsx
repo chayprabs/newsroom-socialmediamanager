@@ -1,12 +1,14 @@
-import { useState, useEffect } from 'react';
+'use client';
+
+import { useEffect, useState } from 'react';
 import { Heading, Bold, Italic, List, ListOrdered, Link, Code } from 'lucide-react';
 
 interface MarkdownEditorProps {
   title: string;
   subtitle: string;
   initialContent: string;
-  onSave: (content: string) => void;
-  onReset: () => void;
+  onSave: (content: string) => Promise<void> | void;
+  onReset: () => Promise<string | void> | string | void;
 }
 
 export function MarkdownEditor({ title, subtitle, initialContent, onSave, onReset }: MarkdownEditorProps) {
@@ -15,13 +17,25 @@ export function MarkdownEditor({ title, subtitle, initialContent, onSave, onRese
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
 
   useEffect(() => {
+    setContent(initialContent);
+  }, [initialContent]);
+
+  useEffect(() => {
     setHasChanges(content !== initialContent);
   }, [content, initialContent]);
 
-  const handleSave = () => {
-    onSave(content);
+  const handleSave = async () => {
+    await onSave(content);
     setLastSaved(new Date());
     setHasChanges(false);
+  };
+
+  const handleReset = async () => {
+    const resetContent = await onReset();
+    if (typeof resetContent === 'string') {
+      setContent(resetContent);
+    }
+    setLastSaved(new Date());
   };
 
   const wordCount = content.trim().split(/\s+/).filter(Boolean).length;
@@ -101,7 +115,7 @@ export function MarkdownEditor({ title, subtitle, initialContent, onSave, onRese
                 e.currentTarget.style.borderColor = '#E5E5E5';
                 e.currentTarget.style.color = '#666';
               }}
-              onClick={onReset}
+              onClick={handleReset}
             >
               Reset to default
             </button>

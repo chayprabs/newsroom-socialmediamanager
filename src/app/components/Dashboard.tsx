@@ -1,14 +1,32 @@
-import { useEffect } from 'react';
-import { useNavigate } from 'react-router';
+'use client';
+
+import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import type { RunSummary } from '@/lib/types';
 import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
+import { RunCard } from './RunCard';
 
 export function Dashboard() {
-  const navigate = useNavigate();
+  const router = useRouter();
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [isCreating, setIsCreating] = useState(false);
 
   useEffect(() => {
     document.title = 'Newsroom';
+
+    fetch('/api/runs')
+      .then((response) => response.json())
+      .then((data) => setRuns(data.runs ?? []))
+      .catch(() => setRuns([]));
   }, []);
+
+  const handleCreateRun = async () => {
+    setIsCreating(true);
+    const response = await fetch('/api/runs', { method: 'POST' });
+    const data = await response.json();
+    router.push(`/generating?runId=${data.run.run_id}`);
+  };
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -45,14 +63,38 @@ export function Dashboard() {
                 e.currentTarget.style.backgroundColor = '#000';
               }}
               onClick={() => {
-                navigate('/generating');
+                handleCreateRun();
               }}
+              disabled={isCreating}
             >
-              Generate new post
+              {isCreating ? 'Starting' : 'Generate new post'}
             </button>
           </div>
 
-          <EmptyState />
+          {runs.length === 0 ? (
+            <EmptyState
+              title="No runs yet"
+              description="Generate your first post to get started."
+            />
+          ) : (
+            <div
+              className="grid gap-4"
+              style={{
+                gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
+              }}
+            >
+              {runs.map((run) => (
+                <RunCard
+                  key={run.run_id}
+                  imageUrl={run.image_url}
+                  headline={run.headline}
+                  date={run.date}
+                  status={run.status}
+                  onClick={() => router.push(`/runs/${run.run_id}`)}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </main>
     </div>

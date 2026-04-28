@@ -1,31 +1,43 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router';
-import { isAuthenticated, signIn, validateCredentials } from '../auth';
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 export function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
-  const navigate = useNavigate();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const router = useRouter();
 
   useEffect(() => {
     document.title = 'Sign in - Newsroom';
+  }, []);
 
-    if (isAuthenticated()) {
-      navigate('/dashboard', { replace: true });
-    }
-  }, [navigate]);
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setIsSubmitting(true);
+    setAuthError('');
 
-    if (!validateCredentials(username, password)) {
-      setAuthError('Invalid username or password.');
-      return;
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ username, password }),
+      });
+
+      if (!response.ok) {
+        setAuthError('Invalid username or password.');
+        return;
+      }
+
+      router.replace('/dashboard');
+      router.refresh();
+    } finally {
+      setIsSubmitting(false);
     }
-
-    signIn();
-    navigate('/dashboard', { replace: true });
   };
 
   return (
@@ -151,18 +163,19 @@ export function Login() {
           <button
             type="submit"
             className="w-full transition-all"
+            disabled={isSubmitting}
             style={{
               height: '36px',
-              backgroundColor: '#000',
-              color: '#fff',
+              backgroundColor: isSubmitting ? '#E5E5E5' : '#000',
+              color: isSubmitting ? '#999' : '#fff',
               fontSize: '13px',
               fontWeight: 500,
               borderRadius: '8px',
               border: 'none',
-              cursor: 'pointer'
+              cursor: isSubmitting ? 'not-allowed' : 'pointer'
             }}
           >
-            Sign in
+            {isSubmitting ? 'Signing in' : 'Sign in'}
           </button>
         </form>
       </div>

@@ -1,18 +1,79 @@
-import { useEffect } from 'react';
-import { useNavigate } from 'react-router';
+'use client';
+
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { Download } from 'lucide-react';
 import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
+import { useRunState } from './useRunState';
 
 export function ReviewPost() {
-  const navigate = useNavigate();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const runId = searchParams.get('runId');
+  const { run, setRun, isLoading, error } = useRunState(runId);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editPrompt, setEditPrompt] = useState('');
+  const [isWorking, setIsWorking] = useState(false);
 
   useEffect(() => {
     document.title = 'Review post - Newsroom';
   }, []);
 
   const handleBack = () => {
-    navigate('/dashboard');
+    router.push('/dashboard');
   };
+
+  const handleSave = async () => {
+    if (!runId) return;
+    setIsWorking(true);
+    await fetch(`/api/runs/${runId}/save`, { method: 'POST' });
+    router.push('/dashboard');
+  };
+
+  const handleRegenerate = async () => {
+    if (!runId) return;
+    setIsWorking(true);
+    const response = await fetch(`/api/runs/${runId}/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ editPrompt }),
+    });
+    const data = await response.json();
+    setRun(data.run);
+    setIsEditMode(false);
+    setEditPrompt('');
+    setIsWorking(false);
+  };
+
+  const imageUrl = runId ? `/api/runs/${runId}/image` : '';
+
+  const PostImage = () => (
+    <div style={{ width: '480px', maxWidth: '100%', aspectRatio: '4 / 5', border: '0.5px solid #E5E5E5', borderRadius: '12px', overflow: 'hidden', position: 'relative', backgroundColor: '#F5F5F5' }}>
+      <a
+        href={imageUrl}
+        download
+        className="transition-all"
+        style={{
+          position: 'absolute',
+          top: '12px',
+          right: '12px',
+          width: '32px',
+          height: '32px',
+          backgroundColor: '#fff',
+          border: '0.5px solid #E5E5E5',
+          borderRadius: '8px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10
+        }}
+      >
+        <Download size={14} color="#000" />
+      </a>
+      <img src={imageUrl} alt={run?.data?.title ?? 'Generated post'} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+    </div>
+  );
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -28,50 +89,66 @@ export function ReviewPost() {
             paddingRight: '24px'
           }}
         >
-          <div
-            className="bg-white flex flex-col items-center"
-            style={{
-              width: '100%',
-              maxWidth: '460px',
-              border: '0.5px solid #E5E5E5',
-              borderRadius: '14px',
-              padding: '36px 36px 28px',
-              boxShadow: '0 10px 30px rgba(0, 0, 0, 0.04)'
-            }}
-          >
-            <EmptyState
-              title="No post to review"
-              description="Generated post output will appear here once the real generation workflow is connected."
-            />
-
-            <button
-              onClick={handleBack}
-              className="transition-all"
-              style={{
-                height: '36px',
-                paddingLeft: '16px',
-                paddingRight: '16px',
-                fontSize: '13px',
-                fontWeight: 400,
-                color: '#000',
-                backgroundColor: '#fff',
-                border: '0.5px solid #E5E5E5',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)'
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = '#999';
-                e.currentTarget.style.backgroundColor = '#FAFAFA';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = '#E5E5E5';
-                e.currentTarget.style.backgroundColor = '#fff';
-              }}
-            >
-              Back to dashboard
-            </button>
-          </div>
+          {isLoading || !run ? (
+            <div className="bg-white flex flex-col items-center" style={{ width: '100%', maxWidth: '460px', border: '0.5px solid #E5E5E5', borderRadius: '14px', padding: '36px 36px 28px' }}>
+              <EmptyState title="Loading post" description="Fetching the generated output for this run." />
+            </div>
+          ) : run.status === 'failed' || error || !run.image_path ? (
+            <div className="bg-white flex flex-col items-center" style={{ width: '100%', maxWidth: '460px', border: '0.5px solid #E5E5E5', borderRadius: '14px', padding: '36px 36px 28px' }}>
+              <EmptyState title="No post to review" description={run.error || error || 'Generation has not completed yet.'} />
+              <button onClick={handleBack} className="transition-all" style={{ height: '36px', paddingLeft: '16px', paddingRight: '16px', fontSize: '13px', color: '#000', backgroundColor: '#fff', border: '0.5px solid #E5E5E5', borderRadius: '8px', cursor: 'pointer' }}>
+                Back to dashboard
+              </button>
+            </div>
+          ) : isEditMode ? (
+            <div style={{ maxWidth: '960px', paddingLeft: '24px', paddingRight: '24px' }}>
+              <div className="flex" style={{ gap: '24px', marginBottom: '24px' }}>
+                <PostImage />
+                <div className="bg-white" style={{ width: '400px', border: '0.5px solid #E5E5E5', borderRadius: '12px', padding: '20px' }}>
+                  <h3 style={{ fontSize: '15px', fontWeight: 500, color: '#000', marginBottom: '4px' }}>Edit post</h3>
+                  <p style={{ fontSize: '12px', color: '#888', marginBottom: '16px' }}>
+                    Describe the changes you want and Newsroom will regenerate.
+                  </p>
+                  <textarea
+                    value={editPrompt}
+                    onChange={(event) => setEditPrompt(event.target.value)}
+                    placeholder="Make the headline shorter, adjust colors, or simplify the chart."
+                    style={{ width: '100%', height: '140px', border: '0.5px solid #E5E5E5', borderRadius: '8px', padding: '12px', fontSize: '13px', resize: 'none', outline: 'none', marginBottom: '16px' }}
+                  />
+                  <button onClick={handleRegenerate} disabled={isWorking} className="transition-all" style={{ width: '100%', backgroundColor: isWorking ? '#E5E5E5' : '#000', color: isWorking ? '#999' : '#fff', height: '36px', fontSize: '13px', fontWeight: 500, borderRadius: '8px', border: 'none', cursor: isWorking ? 'not-allowed' : 'pointer' }}>
+                    {isWorking ? 'Regenerating' : 'Regenerate'}
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center justify-center gap-2">
+                <button onClick={() => setIsEditMode(false)} className="transition-all" style={{ backgroundColor: '#fff', border: '0.5px solid #E5E5E5', color: '#000', height: '36px', paddingLeft: '14px', paddingRight: '14px', fontSize: '13px', borderRadius: '8px', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+                <button onClick={handleSave} className="transition-all" style={{ backgroundColor: '#000', color: '#fff', height: '36px', paddingLeft: '14px', paddingRight: '14px', fontSize: '13px', fontWeight: 500, borderRadius: '8px', border: 'none', cursor: 'pointer' }}>
+                  Save
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center" style={{ maxWidth: '520px', paddingLeft: '24px', paddingRight: '24px' }}>
+              <div style={{ marginBottom: '20px' }}>
+                <PostImage />
+              </div>
+              {run.caption && (
+                <p className="text-center" style={{ fontSize: '13px', color: '#666', lineHeight: '1.5', marginBottom: '24px' }}>
+                  {run.caption}
+                </p>
+              )}
+              <div className="flex items-center gap-2">
+                <button onClick={() => setIsEditMode(true)} className="transition-all" style={{ backgroundColor: '#fff', border: '0.5px solid #E5E5E5', color: '#000', height: '36px', paddingLeft: '14px', paddingRight: '14px', fontSize: '13px', borderRadius: '8px', cursor: 'pointer' }}>
+                  Edit
+                </button>
+                <button onClick={handleSave} disabled={isWorking} className="transition-all" style={{ backgroundColor: isWorking ? '#E5E5E5' : '#000', color: isWorking ? '#999' : '#fff', height: '36px', paddingLeft: '14px', paddingRight: '14px', fontSize: '13px', fontWeight: 500, borderRadius: '8px', border: 'none', cursor: isWorking ? 'not-allowed' : 'pointer' }}>
+                  {isWorking ? 'Saving' : 'Save'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
     </div>

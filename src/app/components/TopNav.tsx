@@ -1,18 +1,21 @@
+'use client';
+
+import Link from 'next/link';
+import { usePathname, useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { useLocation, Link, useNavigate } from 'react-router';
 import { LogOut } from 'lucide-react';
-import { signOut } from '../auth';
 
 export function TopNav() {
-  const location = useLocation();
-  const navigate = useNavigate();
+  const pathname = usePathname();
+  const router = useRouter();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
 
-  const isActive = (path: string) => location.pathname === path;
-  const handleSignOut = () => {
+  const isActive = (path: string) => pathname === path;
+  const handleSignOut = async () => {
     setIsProfileOpen(false);
-    signOut();
-    navigate('/', { replace: true });
+    await fetch('/api/auth/logout', { method: 'POST' });
+    router.replace('/');
+    router.refresh();
   };
 
   return (
@@ -31,7 +34,7 @@ export function TopNav() {
 
       <div className="absolute left-1/2 transform -translate-x-1/2 flex items-center gap-2 bg-[#F5F5F5] p-1 rounded-full">
         <Link
-          to="/dashboard"
+          href="/dashboard"
           className="transition-all"
           style={{
             fontSize: '13px',
@@ -50,7 +53,7 @@ export function TopNav() {
           Dashboard
         </Link>
         <Link
-          to="/manage-base"
+          href="/manage-base"
           className="transition-all"
           style={{
             fontSize: '13px',
@@ -69,7 +72,7 @@ export function TopNav() {
           Manage base
         </Link>
         <Link
-          to="/manage-design"
+          href="/manage-design"
           className="transition-all"
           style={{
             fontSize: '13px',

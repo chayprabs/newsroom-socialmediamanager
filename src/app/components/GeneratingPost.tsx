@@ -1,17 +1,59 @@
-import { useEffect } from 'react';
-import { useNavigate } from 'react-router';
+'use client';
+
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
+import { Loader2 } from 'lucide-react';
 import { TopNav } from './TopNav';
-import { EmptyState } from './EmptyState';
+import { useRunState } from './useRunState';
 
 export function GeneratingPost() {
-  const navigate = useNavigate();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const runId = searchParams.get('runId');
+  const { run, setRun, error, setError } = useRunState(runId);
+  const [isStarting, setIsStarting] = useState(false);
+  const hasStartedDiscovery = useRef(false);
 
   useEffect(() => {
     document.title = 'Generate - Newsroom';
   }, []);
 
+  useEffect(() => {
+    if (runId || isStarting) return;
+
+    setIsStarting(true);
+    fetch('/api/runs', { method: 'POST' })
+      .then((response) => response.json())
+      .then((data) => router.replace(`/generating?runId=${data.run.run_id}`))
+      .catch(() => setError('Could not start a new run.'))
+      .finally(() => setIsStarting(false));
+  }, [isStarting, router, runId, setError]);
+
+  useEffect(() => {
+    if (!runId || hasStartedDiscovery.current) return;
+    hasStartedDiscovery.current = true;
+
+    fetch(`/api/runs/${runId}/discover`, { method: 'POST' })
+      .then((response) => response.json())
+      .then((data) => {
+        if (data.run) {
+          setRun(data.run);
+          if (data.run.status === 'awaiting_selection') {
+            router.replace(`/pick-idea?runId=${runId}`);
+          }
+        }
+      })
+      .catch(() => setError('Idea discovery failed to start.'));
+  }, [router, runId, setError, setRun]);
+
+  useEffect(() => {
+    if (run?.status === 'awaiting_selection') {
+      router.replace(`/pick-idea?runId=${run.run_id}`);
+    }
+  }, [router, run]);
+
   const handleCancel = () => {
-    navigate('/dashboard');
+    router.push('/dashboard');
   };
 
   return (
@@ -39,10 +81,50 @@ export function GeneratingPost() {
               boxShadow: '0 10px 30px rgba(0, 0, 0, 0.04)'
             }}
           >
-            <EmptyState
-              title="Idea discovery is not connected"
-              description="This screen is ready for the real generation flow from the PRD."
-            />
+            <div
+              className="rounded-full flex items-center justify-center"
+              style={{
+                width: '44px',
+                height: '44px',
+                backgroundColor: '#F5F5F5',
+                border: '0.5px solid #E5E5E5',
+                marginBottom: '22px'
+              }}
+            >
+              <Loader2 className="animate-spin" size={18} style={{ color: '#000' }} />
+            </div>
+
+            <h1 style={{ fontSize: '20px', fontWeight: 500, color: '#000', marginBottom: '8px' }}>
+              Finding relevant ideas
+            </h1>
+            <p
+              className="text-center"
+              style={{ fontSize: '13px', color: '#666', lineHeight: '1.5', marginBottom: '24px' }}
+            >
+              Newsroom is scanning trend signals and preparing candidate post ideas.
+            </p>
+
+            <div
+              className="w-full"
+              style={{
+                border: '0.5px solid #E5E5E5',
+                borderRadius: '10px',
+                backgroundColor: '#FAFAFA',
+                padding: '14px',
+                marginBottom: '24px'
+              }}
+            >
+              {(run?.logs ?? []).slice(-5).map((log) => (
+                <div key={`${log.at}-${log.message}`} style={{ fontSize: '12px', color: '#666', lineHeight: '1.5', marginBottom: '6px' }}>
+                  {log.message}
+                </div>
+              ))}
+              {error || run?.error ? (
+                <div style={{ fontSize: '12px', color: '#B42318', lineHeight: '1.5' }}>
+                  {error || run?.error}
+                </div>
+              ) : null}
+            </div>
 
             <button
               onClick={handleCancel}
