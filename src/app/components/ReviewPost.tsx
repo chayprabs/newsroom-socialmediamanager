@@ -10,7 +10,7 @@ import { useRunState } from './useRunState';
 export function ReviewPost() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const runId = searchParams.get('runId');
+  const runId = searchParams?.get('runId') ?? null;
   const { run, setRun, isLoading, error } = useRunState(runId);
   const [isEditMode, setIsEditMode] = useState(false);
   const [editPrompt, setEditPrompt] = useState('');

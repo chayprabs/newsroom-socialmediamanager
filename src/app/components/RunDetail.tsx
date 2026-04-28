@@ -10,7 +10,7 @@ import { useRunState } from './useRunState';
 export function RunDetail() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-  const runId = params.id;
+  const runId = params?.id ?? null;
   const { run, isLoading, error } = useRunState(runId);
   const [isImageHovered, setIsImageHovered] = useState(false);
 

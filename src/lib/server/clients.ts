@@ -54,7 +54,7 @@ async function fetchWithRetry(url: string, init: RequestInit, label: string, att
 
 export async function callAnthropic(prompt: string) {
   const apiKey = requireEnv('ANTHROPIC_API_KEY');
-  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929';
+  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-6';
   const response = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -94,7 +94,7 @@ export async function callAnthropic(prompt: string) {
 
 export async function callGrok(prompt: string) {
   const apiKey = requireEnv('GROK_API_KEY');
-  const model = process.env.GROK_MODEL || 'grok-4-latest';
+  const model = process.env.GROK_MODEL || 'grok-4.20';
   const response = await fetchWithRetry('https://api.x.ai/v1/chat/completions', {
     method: 'POST',
     headers: {

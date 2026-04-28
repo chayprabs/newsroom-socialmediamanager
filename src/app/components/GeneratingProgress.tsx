@@ -10,7 +10,7 @@ import { useRunState } from './useRunState';
 export function GeneratingProgress() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const runId = searchParams.get('runId');
+  const runId = searchParams?.get('runId') ?? null;
   const { run, setRun, error, setError } = useRunState(runId);
   const hasStartedGeneration = useRef(false);
 

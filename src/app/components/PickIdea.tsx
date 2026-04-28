@@ -9,7 +9,7 @@ import { useRunState } from './useRunState';
 export function PickIdea() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const runId = searchParams.get('runId');
+  const runId = searchParams?.get('runId') ?? null;
   const { run, isLoading, error } = useRunState(runId);
   const [selectedId, setSelectedId] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);

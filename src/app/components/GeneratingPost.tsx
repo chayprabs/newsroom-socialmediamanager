@@ -9,7 +9,7 @@ import { useRunState } from './useRunState';
 export function GeneratingPost() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const runId = searchParams.get('runId');
+  const runId = searchParams?.get('runId') ?? null;
   const { run, setRun, error, setError } = useRunState(runId);
   const [isStarting, setIsStarting] = useState(false);
   const hasStartedDiscovery = useRef(false);
