@@ -65,7 +65,7 @@ export function ReviewPost() {
     <div
       onMouseEnter={() => setIsImageHovered(true)}
       onMouseLeave={() => setIsImageHovered(false)}
-      style={{ width: '480px', maxWidth: '100%', aspectRatio: '4 / 5', border: '0.5px solid #E5E5E5', borderRadius: '12px', overflow: 'hidden', position: 'relative', backgroundColor: '#F5F5F5' }}
+      style={{ width: '480px', maxWidth: '100%', aspectRatio: '2 / 3', border: '0.5px solid #E5E5E5', borderRadius: '12px', overflow: 'hidden', position: 'relative', backgroundColor: '#F5F5F5' }}
     >
       <a
         href={downloadUrl}
@@ -92,7 +92,7 @@ export function ReviewPost() {
       >
         <Download size={14} color="#000" />
       </a>
-      <img src={imageUrl} alt={run?.data?.title ?? 'Generated post'} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+      <img src={imageUrl} alt={run?.data?.title ?? 'Generated post'} style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
     </div>
   );
 

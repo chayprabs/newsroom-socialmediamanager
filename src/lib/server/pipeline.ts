@@ -1,14 +1,41 @@
 import { randomUUID } from 'node:crypto';
 import type { CandidateSpec, GeneratedPostData, GenerationStep, RunState } from '../types';
-import { callAnthropic, callCrustdata, callGrok } from './clients';
+import { callAnthropic, callCrustdata, callGrok, generateOpenAiImage, isOpenAiImageConfigured } from './clients';
 import { extractJsonObject } from './json';
-import { renderPostSvg } from './image';
+import { buildPostImagePrompt, renderPostSvg } from './image';
 import {
   readMarkdown,
   readRun,
   writeRun,
   writeRunArtifact,
+  writeRunBinaryArtifact,
 } from './storage';
+
+const CONFIRMED_CRUSTDATA_ENDPOINTS = [
+  '/company/identify',
+  '/company/search/autocomplete',
+  '/company/search',
+  '/company/enrich',
+  '/person/search/autocomplete',
+  '/person/search',
+  '/person/enrich',
+  '/job/search',
+  '/web/enrich/live',
+] as const;
+
+function normalizeEndpoint(endpoint: string) {
+  return endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+}
+
+function isConfirmedCrustdataEndpoint(endpoint: string) {
+  return CONFIRMED_CRUSTDATA_ENDPOINTS.includes(
+    normalizeEndpoint(endpoint) as (typeof CONFIRMED_CRUSTDATA_ENDPOINTS)[number]
+  );
+}
+
+function formatConfirmedEndpoints() {
+  return CONFIRMED_CRUSTDATA_ENDPOINTS.map((endpoint) => `- ${endpoint}`).join('\n');
+}
 
 function now() {
   return new Date().toISOString();
@@ -65,6 +92,44 @@ async function noMatches(run: RunState, message: string) {
     candidates: [],
     logs: [...run.logs, { at: now(), message }],
   });
+}
+
+async function createPostImageArtifact(
+  runId: string,
+  data: GeneratedPostData,
+  design: string,
+  template: string,
+  caption: string
+) {
+  const prompt = buildPostImagePrompt(data, design, template, caption);
+  await writeRunArtifact(runId, 'image-prompt.txt', prompt);
+
+  if (isOpenAiImageConfigured()) {
+    const image = await generateOpenAiImage(prompt);
+    const filename = `post.${image.extension}`;
+    const imagePath = await writeRunBinaryArtifact(runId, filename, image.buffer);
+
+    if (image.revisedPrompt) {
+      await writeRunArtifact(runId, 'openai-revised-image-prompt.txt', image.revisedPrompt);
+    }
+
+    return {
+      imagePath,
+      filename,
+      mimeType: image.mimeType,
+      model: image.model,
+      logMessage: `Generated image with OpenAI ${image.model}.`,
+    };
+  }
+
+  const svg = renderPostSvg(data, template);
+  return {
+    imagePath: await writeRunArtifact(runId, 'post.svg', svg),
+    filename: 'post.svg',
+    mimeType: 'image/svg+xml',
+    model: 'local-svg-fallback',
+    logMessage: 'Rendered local SVG fallback because OPENAI_API_KEY is not configured.',
+  };
 }
 
 function requireRun(run: RunState | null): RunState {
@@ -153,6 +218,12 @@ ${design}
 Candidate trends:
 ${JSON.stringify({ candidates: rawCandidateList }, null, 2)}
 
+Crustdata endpoint constraints:
+Only use endpoints that were verified on the active API key:
+${formatConfirmedEndpoints()}
+
+Do not use these currently unavailable endpoints: /web/search/live, /company/professional_network/search/live, /person/professional_network/search/live, /person/professional_network/enrich/live, /job/professional_network/search/live, /professional_network/search/autocomplete.
+
 Score candidates for api_feasibility, recency, archetype_fit, visual_potential, engagement_likelihood, and total. Return only the best three ideas as JSON:
 {
   "top_3": [
@@ -180,11 +251,15 @@ Score candidates for api_feasibility, recency, archetype_fit, visual_potential, 
         candidate?.candidate_id &&
         candidate?.headline &&
         candidate?.subhead &&
-        candidate?.crustdata_query?.endpoint
+        candidate?.crustdata_query?.endpoint &&
+        isConfirmedCrustdataEndpoint(candidate.crustdata_query.endpoint)
     );
 
     if (!topCandidates.length) {
-      return noMatches(run, 'No candidates passed the Crustdata feasibility filter. Try finding new ideas again.');
+      return noMatches(
+        run,
+        'No candidates passed the verified Crustdata endpoint filter. Try finding new ideas again.'
+      );
     }
 
     return writeRun({
@@ -233,12 +308,16 @@ export async function generatePost(runId: string) {
       throw new Error('No selected candidate to generate from.');
     }
     const selectedCandidate = run.selected_candidate;
+    const endpoint = normalizeEndpoint(selectedCandidate.crustdata_query.endpoint);
+    if (!isConfirmedCrustdataEndpoint(endpoint)) {
+      throw new Error(`Crustdata endpoint ${endpoint} has not been verified for this API key.`);
+    }
 
     run = await writeRun({ ...run, status: 'generating', error: undefined });
     run = await writeRun(updateStep(run, 'fetching_data', 'running', 'Calling Crustdata API.'));
 
     const rawData = await callCrustdata(
-      selectedCandidate.crustdata_query.endpoint,
+      endpoint,
       selectedCandidate.crustdata_query.params
     );
 
@@ -280,16 +359,28 @@ Return JSON:
 
     await writeRunArtifact(runId, 'data.json', JSON.stringify(shaped.data, null, 2));
     run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
-    run = await writeRun(updateStep(run, 'generating_image', 'running', 'Rendering a brand-safe SVG image.'));
+    run = await writeRun(updateStep(run, 'generating_image', 'running', 'Generating the post image.'));
 
-    const svg = renderPostSvg(shaped.data, selectedCandidate.visual_template || selectedCandidate.matched_visual || '');
-    const imagePath = await writeRunArtifact(runId, 'post.svg', svg);
+    const imageArtifact = await createPostImageArtifact(
+      runId,
+      shaped.data,
+      design,
+      selectedCandidate.visual_template || selectedCandidate.matched_visual || '',
+      shaped.caption
+    );
 
     return writeRun({
       ...updateStep(run, 'generating_image', 'done'),
       status: 'ready',
-      image_path: imagePath,
-      logs: [...run.logs, { at: now(), message: 'Generated post is ready for review.' }],
+      image_path: imageArtifact.imagePath,
+      image_filename: imageArtifact.filename,
+      image_mime_type: imageArtifact.mimeType,
+      image_model: imageArtifact.model,
+      logs: [
+        ...run.logs,
+        { at: now(), message: imageArtifact.logMessage },
+        { at: now(), message: 'Generated post is ready for review.' },
+      ],
     });
   } catch (error) {
     return failRun(run, error);
@@ -326,20 +417,30 @@ Return JSON:
 }`);
 
     const revised = extractJsonObject<{ data: GeneratedPostData; caption: string }>(revisedResponse);
-    const svg = renderPostSvg(
+    const design = await readMarkdown('design');
+    const imageArtifact = await createPostImageArtifact(
+      runId,
       revised.data,
-      run.selected_candidate?.visual_template || run.selected_candidate?.matched_visual || ''
+      design,
+      run.selected_candidate?.visual_template || run.selected_candidate?.matched_visual || '',
+      revised.caption
     );
-    const imagePath = await writeRunArtifact(runId, 'post.svg', svg);
 
     return writeRun({
       ...run,
       status: 'ready',
       data: revised.data,
       caption: revised.caption,
-      image_path: imagePath,
+      image_path: imageArtifact.imagePath,
+      image_filename: imageArtifact.filename,
+      image_mime_type: imageArtifact.mimeType,
+      image_model: imageArtifact.model,
       error: undefined,
-      logs: [...run.logs, { at: now(), message: 'Regenerated post is ready.' }],
+      logs: [
+        ...run.logs,
+        { at: now(), message: imageArtifact.logMessage },
+        { at: now(), message: 'Regenerated post is ready.' },
+      ],
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

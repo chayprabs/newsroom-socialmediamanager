@@ -26,6 +26,8 @@ ANTHROPIC_API_KEY=
 GROK_API_KEY=
 CRUSTDATA_API_KEY=
 CRUSTDATA_API_VERSION=
+OPENAI_API_KEY=
+OPENAI_IMAGE_MODEL=gpt-image-2
 ```
 
 Run the app:
@@ -63,7 +65,7 @@ Supported source file types are `.md`, `.mdx`, `.txt`, and `.json`.
 4. Grok returns trend candidates from X.
 5. Claude scores and reframes the best three ideas.
 6. Pick one idea.
-7. Newsroom calls Crustdata, normalizes chart data, renders an image, and writes a caption.
+7. Newsroom calls Crustdata, normalizes chart data, generates the image with OpenAI GPT Image 2, and writes a caption.
 8. Review, download, edit/regenerate, or save the run.
 
 ## API Notes
@@ -80,6 +82,9 @@ The cache is ignored by git. By default it lives for 24 hours. You can change th
 NEWSROOM_CACHE_TTL_HOURS=24
 NEWSROOM_DISABLE_API_CACHE=0
 NEWSROOM_COOKIE_SECURE=0
+OPENAI_IMAGE_SIZE=1024x1536
+OPENAI_IMAGE_QUALITY=high
+OPENAI_IMAGE_FORMAT=png
 ```
 
 ## Auth

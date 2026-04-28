@@ -1,5 +1,7 @@
 import { getCachedValue, setCachedValue } from './cache';
 
+type OpenAiImageFormat = 'png' | 'webp' | 'jpeg';
+
 function requireEnv(name: string) {
   const value = process.env[name];
 
@@ -92,9 +94,73 @@ export async function callAnthropic(prompt: string) {
   return text as string;
 }
 
+export function isOpenAiImageConfigured() {
+  return Boolean(process.env.OPENAI_API_KEY);
+}
+
+function getOpenAiImageFormat(): OpenAiImageFormat {
+  const format = process.env.OPENAI_IMAGE_FORMAT || 'png';
+
+  if (format === 'png' || format === 'webp' || format === 'jpeg') {
+    return format;
+  }
+
+  return 'png';
+}
+
+function mimeTypeForFormat(format: OpenAiImageFormat) {
+  if (format === 'webp') return 'image/webp';
+  if (format === 'jpeg') return 'image/jpeg';
+  return 'image/png';
+}
+
+export async function generateOpenAiImage(prompt: string) {
+  const apiKey = requireEnv('OPENAI_API_KEY');
+  const model = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-2';
+  const size = process.env.OPENAI_IMAGE_SIZE || '1024x1536';
+  const quality = process.env.OPENAI_IMAGE_QUALITY || 'high';
+  const outputFormat = getOpenAiImageFormat();
+
+  const response = await fetchWithRetry('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model,
+      prompt,
+      size,
+      quality,
+      output_format: outputFormat,
+      background: 'opaque',
+    }),
+  }, 'OpenAI image generation');
+
+  if (!response.ok) {
+    throw new Error(`OpenAI image generation failed: ${response.status} ${truncate(await response.text())}`);
+  }
+
+  const data = await response.json();
+  const image = data.data?.[0];
+  const b64Json = image?.b64_json;
+
+  if (!b64Json) {
+    throw new Error('OpenAI image generation did not return base64 image data.');
+  }
+
+  return {
+    buffer: Buffer.from(b64Json, 'base64'),
+    extension: outputFormat === 'jpeg' ? 'jpg' : outputFormat,
+    mimeType: mimeTypeForFormat(outputFormat),
+    model,
+    revisedPrompt: image.revised_prompt as string | undefined,
+  };
+}
+
 export async function callGrok(prompt: string) {
   const apiKey = requireEnv('GROK_API_KEY');
-  const model = process.env.GROK_MODEL || 'grok-4.20';
+  const model = process.env.GROK_MODEL || 'grok-4.20-reasoning';
   const response = await fetchWithRetry('https://api.x.ai/v1/chat/completions', {
     method: 'POST',
     headers: {

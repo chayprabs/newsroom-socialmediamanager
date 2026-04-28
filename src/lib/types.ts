@@ -74,6 +74,9 @@ export interface RunState {
   data?: GeneratedPostData;
   caption?: string;
   image_path?: string;
+  image_filename?: string;
+  image_mime_type?: string;
+  image_model?: string;
   saved_at?: string;
   error?: string;
 }

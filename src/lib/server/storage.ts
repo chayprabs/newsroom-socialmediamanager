@@ -168,6 +168,25 @@ export async function writeRunArtifact(runId: string, filename: string, content:
   return filePath;
 }
 
+export async function writeRunBinaryArtifact(runId: string, filename: string, content: Buffer) {
+  await ensureDir(getRunDir(runId));
+  const filePath = path.join(getRunDir(runId), filename);
+  await fs.writeFile(filePath, content);
+  return filePath;
+}
+
 export async function readRunArtifact(runId: string, filename: string) {
   return readTextFile(path.join(getRunDir(runId), filename));
+}
+
+export async function readRunArtifactBuffer(runId: string, filename: string) {
+  try {
+    return await fs.readFile(path.join(getRunDir(runId), filename));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+
+    throw error;
+  }
 }

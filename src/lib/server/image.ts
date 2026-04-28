@@ -1,5 +1,37 @@
 import type { GeneratedPostData } from '../types';
 
+export function buildPostImagePrompt(
+  data: GeneratedPostData,
+  design: string,
+  template = '',
+  caption = ''
+) {
+  return `Create a polished vertical social media data post image for Newsroom.
+
+Format:
+- Editorial data visualization, not a photorealistic scene.
+- Clean Crustdata-style B2B intelligence design.
+- Premium, restrained, high-contrast, legible typography.
+- Output a finished post image only.
+
+Hard content rules:
+- Use only the title, subtitle, data rows, footer, and caption provided below.
+- Do not invent companies, values, units, annotations, logos, sources, or claims.
+- Keep all visible text crisp and readable.
+- Preserve every number exactly as provided.
+
+Preferred visual template: ${template || 'best chart for the data'}
+
+Design spec:
+${design || 'Use a clean white editorial layout with sharp chart hierarchy.'}
+
+Post data:
+${JSON.stringify(data, null, 2)}
+
+Caption context:
+${caption || 'No caption provided.'}`;
+}
+
 function escapeXml(value: string) {
   return value
     .replaceAll('&', '&amp;')
