@@ -2,15 +2,16 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { RunState, RunSummary } from '../types';
 
-const DATA_ROOT = process.env.NEWSROOM_DATA_DIR
+export const dataRoot = process.env.NEWSROOM_DATA_DIR
   ? path.resolve(process.env.NEWSROOM_DATA_DIR)
   : process.env.VERCEL
     ? path.join('/tmp', 'newsroom')
     : process.cwd();
 
-const BASE_DIR = path.join(DATA_ROOT, 'base');
-const DESIGN_DIR = path.join(DATA_ROOT, 'design');
-const RUNS_DIR = path.join(DATA_ROOT, 'runs');
+const BASE_DIR = path.join(dataRoot, 'base');
+const DESIGN_DIR = path.join(dataRoot, 'design');
+const RUNS_DIR = path.join(dataRoot, 'runs');
+const SOURCE_DIRS = [path.join(BASE_DIR, 'source'), path.join(BASE_DIR, 'sources')];
 
 export const basePath = path.join(BASE_DIR, 'base.md');
 export const baseDefaultPath = path.join(BASE_DIR, 'default.md');
@@ -19,6 +20,12 @@ export const designDefaultPath = path.join(DESIGN_DIR, 'default.md');
 
 async function ensureDir(dir: string) {
   await fs.mkdir(dir, { recursive: true });
+}
+
+export async function ensureDataSubdir(...parts: string[]) {
+  const dir = path.join(dataRoot, ...parts);
+  await ensureDir(dir);
+  return dir;
 }
 
 async function readTextFile(filePath: string) {
@@ -37,12 +44,19 @@ export async function readMarkdown(kind: 'base' | 'design') {
   return readTextFile(kind === 'base' ? basePath : designPath);
 }
 
+export function getMarkdownPath(kind: 'base' | 'design') {
+  return kind === 'base' ? basePath : designPath;
+}
+
 export async function writeMarkdown(kind: 'base' | 'design', content: string) {
   const dir = kind === 'base' ? BASE_DIR : DESIGN_DIR;
   const filePath = kind === 'base' ? basePath : designPath;
+  const tempPath = `${filePath}.tmp`;
 
   await ensureDir(dir);
-  await fs.writeFile(filePath, content, 'utf8');
+  await fs.writeFile(tempPath, content, 'utf8');
+  await fs.rename(tempPath, filePath);
+  return filePath;
 }
 
 export async function resetMarkdown(kind: 'base' | 'design') {
@@ -50,6 +64,44 @@ export async function resetMarkdown(kind: 'base' | 'design') {
   const content = await readTextFile(defaultPath);
   await writeMarkdown(kind, content);
   return content;
+}
+
+async function listReadableFiles(dir: string): Promise<string[]> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const nested = await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          return listReadableFiles(entryPath);
+        }
+        if (/\.(md|mdx|txt|json)$/i.test(entry.name)) {
+          return [entryPath];
+        }
+        return [];
+      })
+    );
+
+    return nested.flat();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+
+    throw error;
+  }
+}
+
+export async function readBaseSourceCorpus() {
+  const files = (await Promise.all(SOURCE_DIRS.map((dir) => listReadableFiles(dir)))).flat();
+  const uniqueFiles = Array.from(new Set(files));
+
+  return Promise.all(
+    uniqueFiles.map(async (filePath) => ({
+      path: path.relative(dataRoot, filePath),
+      content: await readTextFile(filePath),
+    }))
+  );
 }
 
 export function getRunDir(runId: string) {

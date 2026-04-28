@@ -15,6 +15,7 @@ export function ReviewPost() {
   const [isEditMode, setIsEditMode] = useState(false);
   const [editPrompt, setEditPrompt] = useState('');
   const [isWorking, setIsWorking] = useState(false);
+  const [isImageHovered, setIsImageHovered] = useState(false);
 
   useEffect(() => {
     document.title = 'Review post - Newsroom';
@@ -27,8 +28,12 @@ export function ReviewPost() {
   const handleSave = async () => {
     if (!runId) return;
     setIsWorking(true);
-    await fetch(`/api/runs/${runId}/save`, { method: 'POST' });
-    router.push('/dashboard');
+    const response = await fetch(`/api/runs/${runId}/save`, { method: 'POST' });
+    setIsWorking(false);
+
+    if (response.ok) {
+      router.push('/dashboard');
+    }
   };
 
   const handleRegenerate = async () => {
@@ -40,20 +45,33 @@ export function ReviewPost() {
       body: JSON.stringify({ editPrompt }),
     });
     const data = await response.json();
-    setRun(data.run);
-    setIsEditMode(false);
-    setEditPrompt('');
+    if (response.ok && data.run) {
+      setRun(data.run);
+      if (!data.run.error) {
+        setIsEditMode(false);
+        setEditPrompt('');
+      }
+    }
     setIsWorking(false);
   };
 
-  const imageUrl = runId ? `/api/runs/${runId}/image` : '';
+  const imageVersion = run?.updated_at ? `?version=${encodeURIComponent(run.updated_at)}` : '';
+  const imageUrl = runId ? `/api/runs/${runId}/image${imageVersion}` : '';
+  const downloadUrl = runId
+    ? `/api/runs/${runId}/image?download=1${run?.updated_at ? `&version=${encodeURIComponent(run.updated_at)}` : ''}`
+    : '';
 
   const PostImage = () => (
-    <div style={{ width: '480px', maxWidth: '100%', aspectRatio: '4 / 5', border: '0.5px solid #E5E5E5', borderRadius: '12px', overflow: 'hidden', position: 'relative', backgroundColor: '#F5F5F5' }}>
+    <div
+      onMouseEnter={() => setIsImageHovered(true)}
+      onMouseLeave={() => setIsImageHovered(false)}
+      style={{ width: '480px', maxWidth: '100%', aspectRatio: '4 / 5', border: '0.5px solid #E5E5E5', borderRadius: '12px', overflow: 'hidden', position: 'relative', backgroundColor: '#F5F5F5' }}
+    >
       <a
-        href={imageUrl}
+        href={downloadUrl}
         download
         className="transition-all"
+        aria-label="Download post image"
         style={{
           position: 'absolute',
           top: '12px',
@@ -66,7 +84,10 @@ export function ReviewPost() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          zIndex: 10
+          zIndex: 10,
+          opacity: isImageHovered ? 1 : 0,
+          transform: isImageHovered ? 'translateY(0)' : 'translateY(-4px)',
+          pointerEvents: isImageHovered ? 'auto' : 'none'
         }}
       >
         <Download size={14} color="#000" />
@@ -118,6 +139,11 @@ export function ReviewPost() {
                   <button onClick={handleRegenerate} disabled={isWorking} className="transition-all" style={{ width: '100%', backgroundColor: isWorking ? '#E5E5E5' : '#000', color: isWorking ? '#999' : '#fff', height: '36px', fontSize: '13px', fontWeight: 500, borderRadius: '8px', border: 'none', cursor: isWorking ? 'not-allowed' : 'pointer' }}>
                     {isWorking ? 'Regenerating' : 'Regenerate'}
                   </button>
+                  {run.error && (
+                    <p style={{ fontSize: '12px', color: '#B42318', lineHeight: '1.5', marginTop: '12px' }}>
+                      {run.error}
+                    </p>
+                  )}
                 </div>
               </div>
               <div className="flex items-center justify-center gap-2">

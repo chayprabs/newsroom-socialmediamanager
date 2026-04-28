@@ -4,6 +4,7 @@ import {
   createSessionToken,
   SESSION_COOKIE_NAME,
   SESSION_MAX_AGE_SECONDS,
+  shouldUseSecureCookies,
 } from '@/lib/session';
 
 export const runtime = 'nodejs';
@@ -40,7 +41,7 @@ export async function POST(request: NextRequest) {
     value: token,
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: shouldUseSecureCookies(),
     path: '/',
     maxAge: SESSION_MAX_AGE_SECONDS,
   });

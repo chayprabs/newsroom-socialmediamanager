@@ -57,6 +57,16 @@ async function failRun(run: RunState, error: unknown) {
   });
 }
 
+async function noMatches(run: RunState, message: string) {
+  return writeRun({
+    ...run,
+    status: 'no_matches',
+    error: undefined,
+    candidates: [],
+    logs: [...run.logs, { at: now(), message }],
+  });
+}
+
 function requireRun(run: RunState | null): RunState {
   if (!run) {
     throw new Error('Run not found.');
@@ -124,8 +134,13 @@ Return JSON with this exact shape:
   ]
 }`);
 
-    const rawCandidates = extractJsonObject<{ candidates: unknown[] }>(grokResponse);
-    run = await appendLog(run, `Grok returned ${rawCandidates.candidates?.length ?? 0} candidate trends.`);
+    const rawCandidates = extractJsonObject<{ candidates?: unknown[] }>(grokResponse);
+    const rawCandidateList = Array.isArray(rawCandidates.candidates) ? rawCandidates.candidates : [];
+    run = await appendLog(run, `Grok returned ${rawCandidateList.length} candidate trends.`);
+
+    if (rawCandidateList.length === 0) {
+      return noMatches(run, 'No current trends matched the editorial base. Try finding new ideas again.');
+    }
 
     const judgedResponse = await callAnthropic(`You are Stage 2 of Newsroom: judge and reframe trends into Crustdata API-backed post ideas.
 
@@ -136,7 +151,7 @@ Visual design spec:
 ${design}
 
 Candidate trends:
-${JSON.stringify(rawCandidates, null, 2)}
+${JSON.stringify({ candidates: rawCandidateList }, null, 2)}
 
 Score candidates for api_feasibility, recency, archetype_fit, visual_potential, engagement_likelihood, and total. Return only the best three ideas as JSON:
 {
@@ -159,15 +174,23 @@ Score candidates for api_feasibility, recency, archetype_fit, visual_potential, 
   ]
 }`);
 
-    const judged = extractJsonObject<{ top_3: CandidateSpec[] }>(judgedResponse);
-    if (!judged.top_3?.length) {
-      throw new Error('No candidates passed judging.');
+    const judged = extractJsonObject<{ top_3?: CandidateSpec[] }>(judgedResponse);
+    const topCandidates = (Array.isArray(judged.top_3) ? judged.top_3 : []).filter(
+      (candidate) =>
+        candidate?.candidate_id &&
+        candidate?.headline &&
+        candidate?.subhead &&
+        candidate?.crustdata_query?.endpoint
+    );
+
+    if (!topCandidates.length) {
+      return noMatches(run, 'No candidates passed the Crustdata feasibility filter. Try finding new ideas again.');
     }
 
     return writeRun({
       ...run,
       status: 'awaiting_selection',
-      candidates: judged.top_3.slice(0, 3),
+      candidates: topCandidates.slice(0, 3),
       logs: [...run.logs, { at: now(), message: 'Candidate judging complete. Awaiting selection.' }],
     });
   } catch (error) {
@@ -259,7 +282,7 @@ Return JSON:
     run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
     run = await writeRun(updateStep(run, 'generating_image', 'running', 'Rendering a brand-safe SVG image.'));
 
-    const svg = renderPostSvg(shaped.data);
+    const svg = renderPostSvg(shaped.data, selectedCandidate.visual_template || selectedCandidate.matched_visual || '');
     const imagePath = await writeRunArtifact(runId, 'post.svg', svg);
 
     return writeRun({
@@ -303,7 +326,10 @@ Return JSON:
 }`);
 
     const revised = extractJsonObject<{ data: GeneratedPostData; caption: string }>(revisedResponse);
-    const svg = renderPostSvg(revised.data);
+    const svg = renderPostSvg(
+      revised.data,
+      run.selected_candidate?.visual_template || run.selected_candidate?.matched_visual || ''
+    );
     const imagePath = await writeRunArtifact(runId, 'post.svg', svg);
 
     return writeRun({
@@ -312,10 +338,17 @@ Return JSON:
       data: revised.data,
       caption: revised.caption,
       image_path: imagePath,
+      error: undefined,
       logs: [...run.logs, { at: now(), message: 'Regenerated post is ready.' }],
     });
   } catch (error) {
-    return failRun(run, error);
+    const message = error instanceof Error ? error.message : String(error);
+    return writeRun({
+      ...run,
+      status: 'ready',
+      error: message,
+      logs: [...run.logs, { at: now(), message: `Regeneration failed: ${message}` }],
+    });
   }
 }
 
@@ -330,6 +363,7 @@ export async function saveRun(runId: string) {
     ...run,
     status: 'saved',
     saved_at: now(),
+    error: undefined,
     logs: [...run.logs, { at: now(), message: 'Run saved.' }],
   });
 }

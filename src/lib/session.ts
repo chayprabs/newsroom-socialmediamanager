@@ -35,3 +35,7 @@ export async function verifySessionToken(token?: string) {
     return false;
   }
 }
+
+export function shouldUseSecureCookies() {
+  return process.env.NEWSROOM_COOKIE_SECURE === '1' || Boolean(process.env.VERCEL);
+}

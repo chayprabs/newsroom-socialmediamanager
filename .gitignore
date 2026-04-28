@@ -2,13 +2,16 @@
 node_modules/
 
 # Build output
-dist/
-.next/
-.vite/
-out/
-.cache/
-runs/
-research/api_responses/
+/dist/
+/.next/
+/.vite/
+/.turbo/
+/.vercel/
+/out/
+/.cache/
+/coverage/
+/runs/
+/research/api_responses/
 
 # Environment files
 .env

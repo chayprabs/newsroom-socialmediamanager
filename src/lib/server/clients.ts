@@ -1,3 +1,5 @@
+import { getCachedValue, setCachedValue } from './cache';
+
 function requireEnv(name: string) {
   const value = process.env[name];
 
@@ -8,10 +10,52 @@ function requireEnv(name: string) {
   return value;
 }
 
+function truncate(value: string) {
+  return value.length > 1200 ? `${value.slice(0, 1200)}...` : value;
+}
+
+function shouldRetry(status: number) {
+  return [408, 409, 425, 429, 500, 502, 503, 504].includes(status);
+}
+
+async function wait(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, label: string, attempts = 3) {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60_000);
+
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (response.ok || !shouldRetry(response.status) || attempt === attempts) {
+        return response;
+      }
+
+      await wait(700 * attempt);
+    } catch (error) {
+      clearTimeout(timeout);
+      lastError = error;
+      if (attempt === attempts) {
+        throw new Error(`${label} request failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      await wait(700 * attempt);
+    }
+  }
+
+  throw new Error(`${label} request failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+}
+
 export async function callAnthropic(prompt: string) {
   const apiKey = requireEnv('ANTHROPIC_API_KEY');
   const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5-20250929';
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const response = await fetchWithRetry('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -29,10 +73,10 @@ export async function callAnthropic(prompt: string) {
         },
       ],
     }),
-  });
+  }, 'Anthropic');
 
   if (!response.ok) {
-    throw new Error(`Anthropic request failed: ${response.status} ${await response.text()}`);
+    throw new Error(`Anthropic request failed: ${response.status} ${truncate(await response.text())}`);
   }
 
   const data = await response.json();
@@ -51,7 +95,7 @@ export async function callAnthropic(prompt: string) {
 export async function callGrok(prompt: string) {
   const apiKey = requireEnv('GROK_API_KEY');
   const model = process.env.GROK_MODEL || 'grok-4-latest';
-  const response = await fetch('https://api.x.ai/v1/chat/completions', {
+  const response = await fetchWithRetry('https://api.x.ai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -71,10 +115,10 @@ export async function callGrok(prompt: string) {
         },
       ],
     }),
-  });
+  }, 'Grok');
 
   if (!response.ok) {
-    throw new Error(`Grok request failed: ${response.status} ${await response.text()}`);
+    throw new Error(`Grok request failed: ${response.status} ${truncate(await response.text())}`);
   }
 
   const data = await response.json();
@@ -91,7 +135,16 @@ export async function callCrustdata(endpoint: string, params: Record<string, unk
   const apiKey = requireEnv('CRUSTDATA_API_KEY');
   const apiVersion = requireEnv('CRUSTDATA_API_VERSION');
   const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-  const response = await fetch(`https://api.crustdata.com${normalizedEndpoint}`, {
+  const cacheInput = { endpoint: normalizedEndpoint, apiVersion, params };
+  const cache = process.env.NEWSROOM_DISABLE_API_CACHE === '1'
+    ? { hit: false as const, key: '', cachePath: '' }
+    : await getCachedValue<unknown>(normalizedEndpoint, cacheInput);
+
+  if (cache.hit) {
+    return cache.value;
+  }
+
+  const response = await fetchWithRetry(`https://api.crustdata.com${normalizedEndpoint}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -99,11 +152,16 @@ export async function callCrustdata(endpoint: string, params: Record<string, unk
       'x-api-version': apiVersion,
     },
     body: JSON.stringify(params),
-  });
+  }, 'Crustdata');
 
   if (!response.ok) {
-    throw new Error(`Crustdata request failed: ${response.status} ${await response.text()}`);
+    throw new Error(`Crustdata request failed: ${response.status} ${truncate(await response.text())}`);
   }
 
-  return response.json();
+  const data = await response.json();
+  if (cache.cachePath && cache.key) {
+    await setCachedValue(cache.cachePath, cache.key, data);
+  }
+
+  return data;
 }

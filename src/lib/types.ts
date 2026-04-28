@@ -1,6 +1,7 @@
 export type RunStatus =
   | 'created'
   | 'discovering'
+  | 'no_matches'
   | 'awaiting_selection'
   | 'generating'
   | 'ready'

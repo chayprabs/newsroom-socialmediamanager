@@ -56,6 +56,14 @@ export function GeneratingPost() {
     router.push('/dashboard');
   };
 
+  const handleFindNewIdeas = () => {
+    hasStartedDiscovery.current = false;
+    router.replace('/generating');
+  };
+
+  const hasNoMatches = run?.status === 'no_matches';
+  const hasFailure = Boolean(error || run?.error);
+
   return (
     <div className="h-screen flex flex-col bg-white">
       <TopNav />
@@ -91,17 +99,25 @@ export function GeneratingPost() {
                 marginBottom: '22px'
               }}
             >
-              <Loader2 className="animate-spin" size={18} style={{ color: '#000' }} />
+              {hasNoMatches || hasFailure ? (
+                <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: hasFailure ? '#B42318' : '#888' }} />
+              ) : (
+                <Loader2 className="animate-spin" size={18} style={{ color: '#000' }} />
+              )}
             </div>
 
             <h1 style={{ fontSize: '20px', fontWeight: 500, color: '#000', marginBottom: '8px' }}>
-              Finding relevant ideas
+              {hasNoMatches ? 'No strong ideas found' : hasFailure ? 'Idea discovery failed' : 'Finding relevant ideas'}
             </h1>
             <p
               className="text-center"
               style={{ fontSize: '13px', color: '#666', lineHeight: '1.5', marginBottom: '24px' }}
             >
-              Newsroom is scanning trend signals and preparing candidate post ideas.
+              {hasNoMatches
+                ? 'The current search did not produce enough Crustdata-ready candidates.'
+                : hasFailure
+                  ? 'Newsroom could not finish this discovery run.'
+                  : 'Newsroom is scanning trend signals and preparing candidate post ideas.'}
             </p>
 
             <div
@@ -126,33 +142,55 @@ export function GeneratingPost() {
               ) : null}
             </div>
 
-            <button
-              onClick={handleCancel}
-              className="transition-all"
-              style={{
-                height: '36px',
-                paddingLeft: '16px',
-                paddingRight: '16px',
-                fontSize: '13px',
-                fontWeight: 400,
-                color: '#000',
-                backgroundColor: '#fff',
-                border: '0.5px solid #E5E5E5',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)'
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.borderColor = '#999';
-                e.currentTarget.style.backgroundColor = '#FAFAFA';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.borderColor = '#E5E5E5';
-                e.currentTarget.style.backgroundColor = '#fff';
-              }}
-            >
-              Cancel
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCancel}
+                className="transition-all"
+                style={{
+                  height: '36px',
+                  paddingLeft: '16px',
+                  paddingRight: '16px',
+                  fontSize: '13px',
+                  fontWeight: 400,
+                  color: '#000',
+                  backgroundColor: '#fff',
+                  border: '0.5px solid #E5E5E5',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  boxShadow: '0 1px 2px rgba(0, 0, 0, 0.03)'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.borderColor = '#999';
+                  e.currentTarget.style.backgroundColor = '#FAFAFA';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = '#E5E5E5';
+                  e.currentTarget.style.backgroundColor = '#fff';
+                }}
+              >
+                Cancel
+              </button>
+              {(hasNoMatches || hasFailure) && (
+                <button
+                  onClick={handleFindNewIdeas}
+                  className="transition-all"
+                  style={{
+                    height: '36px',
+                    paddingLeft: '16px',
+                    paddingRight: '16px',
+                    fontSize: '13px',
+                    fontWeight: 500,
+                    color: '#fff',
+                    backgroundColor: '#000',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Find new ideas
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </main>
