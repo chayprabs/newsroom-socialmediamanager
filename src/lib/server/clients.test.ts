@@ -48,7 +48,7 @@ describe('getOpenAiImageConfig', () => {
       quality: 'high',
       outputFormat: 'png',
       background: 'opaque',
-      exportSize: '1080x1350',
+      exportSize: 'auto',
       safeArea: '1024x1280',
       isLandscape: false,
     });
@@ -72,10 +72,12 @@ describe('getOpenAiImageConfig', () => {
     expect(() => getOpenAiImageConfig('ranked_bar')).toThrow(/landscape-only/);
   });
 
-  it('rejects a portrait safe area larger than the generation canvas', () => {
-    setImageEnv({ OPENAI_IMAGE_SIZE: '1024x1024', OPENAI_IMAGE_SAFE_AREA: '1024x1280' });
+  it('allows auto export size and validates fixed export size formatting', () => {
+    setImageEnv({ OPENAI_IMAGE_EXPORT_SIZE: 'auto' });
+    expect(getOpenAiImageConfig().exportSize).toBe('auto');
 
-    expect(() => getOpenAiImageConfig('ranked_bar')).toThrow(/must fit inside/);
+    setImageEnv({ OPENAI_IMAGE_EXPORT_SIZE: 'not-a-size' });
+    expect(() => getOpenAiImageConfig()).toThrow(/OPENAI_IMAGE_EXPORT_SIZE/);
   });
 
   it('validates quality, format, and background', () => {

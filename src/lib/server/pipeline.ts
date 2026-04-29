@@ -68,6 +68,14 @@ type RuntimeKnowledge = Partial<Record<RuntimeKnowledgeFile, string>>;
 
 const FEASIBILITY_LOG_FILENAME = 'pipeline.log';
 const MAX_DISCOVERY_CANDIDATES = 10;
+const ALLOWED_VISUAL_TEMPLATES = new Set([
+  'ranked_horizontal_bar',
+  'ranked_horizontal_bar_with_icons',
+  'vertical_bar_comparison',
+  'single_line_timeseries',
+  'annotated_line_timeseries',
+  'event_effect_multi_panel_line',
+]);
 const STATIC_PROJECT_CONTEXT = `Newsroom is Crustdata's internal pipeline for turning live tech/startup trend signals into API-backed data posts.
 Use the cached knowledge files as the source of truth for editorial fit, topic scope, voice, visual conventions, and pipeline constraints.
 Keep stage outputs concise, structured, and faithful to the supplied runtime data.
@@ -231,6 +239,24 @@ function unsupportedQuestionReason(candidateSpec: CandidateForValidation) {
 
   const match = UNSUPPORTED_QUESTION_PATTERNS.find(({ pattern }) => pattern.test(text));
   return match?.reason;
+}
+
+function validateVisualTemplate(candidateSpec: CandidateForValidation) {
+  const template = typeof candidateSpec.visual_template === 'string' ? candidateSpec.visual_template.trim() : '';
+
+  if (!template) {
+    return `visual_template is required and must exactly match one of: ${Array.from(ALLOWED_VISUAL_TEMPLATES).join(
+      ', '
+    )}.`;
+  }
+
+  if (!ALLOWED_VISUAL_TEMPLATES.has(template)) {
+    return `Unsupported visual_template "${template}". It must exactly match one of the worked-example templates in design.md: ${Array.from(
+      ALLOWED_VISUAL_TEMPLATES
+    ).join(', ')}.`;
+  }
+
+  return null;
 }
 
 function countFilterConditions(value: unknown): number {
@@ -543,6 +569,11 @@ export function validateFeasibility(candidateSpec: CandidateForValidation): Feas
     return { feasible: false, reason: unsupportedReason, mapped_endpoints: [] };
   }
 
+  const visualTemplateIssue = validateVisualTemplate(candidateSpec);
+  if (visualTemplateIssue) {
+    return { feasible: false, reason: visualTemplateIssue, mapped_endpoints: [] };
+  }
+
   const endpoint = candidateSpec.crustdata_query?.endpoint;
   if (typeof endpoint !== 'string' || !endpoint.trim()) {
     return { feasible: false, reason: 'crustdata_query.endpoint is required.', mapped_endpoints: [] };
@@ -732,7 +763,7 @@ function normalizeValidatedCandidate(
       intent: candidate.crustdata_query?.intent,
       params: stripNonApiHelperParams(candidate.crustdata_query?.params || {}),
     },
-    visual_template: candidate.visual_template || candidate.matched_visual || scoredCandidate?.matched_visual || 'bar',
+    visual_template: candidate.visual_template || candidate.matched_visual || scoredCandidate?.matched_visual || '',
     expected_data_shape: candidate.expected_data_shape,
   };
 

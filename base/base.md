@@ -112,7 +112,7 @@ uploaded_image_19:
 uploaded_image_20:
   title: "Where Do SpaceX Employees Go After Leaving?"
   channel: "uploaded screenshot"
-  visual_template: "ranked_horizontal_bar_with_left_logos"
+  visual_template: "ranked_horizontal_bar_with_icons"
   data_story: "Destination companies for ex-SpaceX employees."
   approximate_values:
     unit: "number of ex-SpaceX employees"
@@ -539,7 +539,7 @@ likely_crustdata_endpoints:
     mapping_confidence: "hypothesis_from_PRD"
 api_feasibility: likely
 visual_templates:
-  preferred: "ranked_horizontal_bar_with_left_logos"
+  preferred: "ranked_horizontal_bar_with_icons"
 angle_patterns:
   - "where_do_x_employees_go_after_leaving"
   - "the_x_alumni_network"
@@ -851,7 +851,7 @@ template_variants:
   - "Where Do {Company} Employees Go After Leaving?"
   - "The {Company} Alumni Map"
 use_when: "People data can identify ex-employees and current destinations."
-best_visuals: ["ranked_horizontal_bar_with_left_logos"]
+best_visuals: ["ranked_horizontal_bar_with_icons"]
 source_refs: ["uploaded_image_20"]
 guardrails:
   - "State the population: ex-employees, current profiles, time window if available."
@@ -1049,8 +1049,8 @@ image_quality_contract:
     rule: "Mirror design.md section 3. Stage 3 must pick exactly one of: ranked_same_type (single color, default #6B5BD9), brand_per_entity (anchor color from table above), positive_negative (#2ECC71 / #E74C3C), single_metric_line (entity brand color or #E47C5A)."
     forbidden: ["rainbow per-row colors in a same-type ranked chart"]
 
-  safe_area_discipline:
-    rule: "All editorial text (title, subtitle, footer, value labels) must fit inside the canvas safe area. Stage 3/5 should not produce strings so long that they force the renderer to crop the title."
+  no_crop_layout:
+    rule: "All editorial text (title, subtitle, footer, value labels) must fit comfortably inside the visible portrait canvas. Stage 3/5 should not produce strings so long that the image model or exporter clips the title."
 ```
 
 ### 4.2 Image generation contract (Stage 2 reframer)
@@ -1096,7 +1096,7 @@ image_generation_contract:
   forbidden_template_names:
     - "Any name not in allowed_templates."
     - "Variants like 'horizontal_bar', 'bar_chart', 'line_chart', 'comparison_chart', 'timeseries' — these are not valid template ids."
-    - "Compound names like 'ranked_horizontal_bar_with_logos' (use ranked_horizontal_bar_with_icons) or 'donut_chart' (no worked example exists)."
+    - "Compound names like 'ranked_horizontal_bar_with_logos' or 'ranked_horizontal_bar_with_left_logos' (use ranked_horizontal_bar_with_icons) or 'donut_chart' (no worked example exists)."
 
   no_template_fits_rule:
     rule: "If the candidate's data shape does not fit any of allowed_templates, mark the candidate INFEASIBLE in the reframer output. Set feasible=false and reason='no design.md visual_template fits this data shape'. Do not invent a new template name to keep the candidate alive."
@@ -1115,7 +1115,7 @@ tone:
   not: "academic, verbose, poetic, corporate PR, meme-only"
 headline_rules:
   length:
-    rule: "Fits comfortably in 2 lines at ~58pt within the safe area. Approximately 6-9 words maximum."
+    rule: "Fits comfortably in 2 lines at ~58pt within the visible portrait canvas. Approximately 6-9 words maximum."
     soft_min_words: 4
     soft_max_words: 9
     hard_max_lines: 2
@@ -1543,7 +1543,7 @@ priority_candidate_shapes:
 
   - idea: "Where are ex-OpenAI employees going?"
     archetype: "person_movement_alumni_destinations"
-    visual: "ranked_horizontal_bar_with_left_logos"
+    visual: "ranked_horizontal_bar_with_icons"
     why: "Analogous to SpaceX alumni post, more relevant to AI audience."
 
   - idea: "Which company is hiring the most forward-deployed AI engineers?"
