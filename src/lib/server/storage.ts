@@ -168,6 +168,13 @@ export async function writeRunArtifact(runId: string, filename: string, content:
   return filePath;
 }
 
+export async function appendRunArtifact(runId: string, filename: string, content: string) {
+  await ensureDir(getRunDir(runId));
+  const filePath = path.join(getRunDir(runId), filename);
+  await fs.appendFile(filePath, content, 'utf8');
+  return filePath;
+}
+
 export async function writeRunBinaryArtifact(runId: string, filename: string, content: Buffer) {
   await ensureDir(getRunDir(runId));
   const filePath = path.join(getRunDir(runId), filename);

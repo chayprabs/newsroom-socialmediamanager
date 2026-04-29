@@ -1,4 +1,5 @@
 import { readRun } from '@/lib/server/storage';
+import { readSonnetUsageSummary } from '@/lib/pipeline/tokenLogger';
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -14,7 +15,8 @@ export async function GET(_request: Request, context: RouteContext) {
     async start(controller) {
       const send = async () => {
         const run = await readRun(id);
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ run })}\n\n`));
+        const usageSummary = readSonnetUsageSummary(id);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ run: run ? { ...run, usage_summary: usageSummary || undefined } : run })}\n\n`));
         return run;
       };
 

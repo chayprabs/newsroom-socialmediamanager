@@ -1,12 +1,59 @@
 import type { GeneratedPostData } from '../types';
 
+export type ImageDimensions = {
+  width: number;
+  height: number;
+};
+
+export type ImageOutputFormat = 'png' | 'jpeg' | 'webp';
+export type ImageBackground = 'opaque' | 'transparent' | 'auto';
+
+export const PORTRAIT_SAFE_AREA_INSTRUCTION =
+  'Create a 4:5 portrait social data graphic centered within a 1024x1536 canvas. Keep all important content inside the centered 1024x1280 safe area. The extra top and bottom space should be plain flat lavender #E8E6F5 so the image can be safely cropped/exported to 1080x1350. Do not place title, chart labels, axes, or footer outside the safe area.';
+
+const LAVENDER_BACKGROUND = '#E8E6F5';
+const LANDSCAPE_TEMPLATE = 'event_effect_multi_panel_line';
+
+export function isLandscapeImageTemplate(template = '') {
+  return template.trim().toLowerCase() === LANDSCAPE_TEMPLATE;
+}
+
+export function parseImageDimensions(value: string, label = 'image size'): ImageDimensions {
+  const match = /^(\d+)x(\d+)$/.exec(value.trim());
+
+  if (!match) {
+    throw new Error(`${label} must be formatted as WIDTHxHEIGHT. Received "${value}".`);
+  }
+
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new Error(`${label} must use positive integer dimensions. Received "${value}".`);
+  }
+
+  return { width, height };
+}
+
 export function buildPostImagePrompt(
   data: GeneratedPostData,
+  base: string,
   design: string,
   template = '',
   caption = ''
 ) {
-  return `Create a polished vertical social media data post image for Newsroom.
+  const isLandscape = isLandscapeImageTemplate(template);
+  const compositionInstruction = isLandscape
+    ? 'Create a polished landscape social media data post image for Newsroom.'
+    : `${PORTRAIT_SAFE_AREA_INSTRUCTION}\n\nCreate a polished vertical social media data post image for Newsroom.`;
+
+  return `Crustdata editorial base (stable cacheable prefix):
+${base}
+
+Crustdata visual design spec (stable cacheable prefix):
+${design}
+
+${compositionInstruction}
 
 Format:
 - Editorial data visualization, not a photorealistic scene.
@@ -22,14 +69,98 @@ Hard content rules:
 
 Preferred visual template: ${template || 'best chart for the data'}
 
-Design spec:
-${design || 'Use a clean white editorial layout with sharp chart hierarchy.'}
-
 Post data:
 ${JSON.stringify(data, null, 2)}
 
 Caption context:
 ${caption || 'No caption provided.'}`;
+}
+
+type NormalizeGeneratedPostImageOptions = {
+  generationSize: string;
+  exportSize: string;
+  safeArea: string;
+  outputFormat: ImageOutputFormat;
+  background: ImageBackground;
+  isLandscape?: boolean;
+};
+
+async function loadSharp() {
+  try {
+    const sharpModule = await import('sharp');
+    return sharpModule.default;
+  } catch (error) {
+    throw new Error(
+      `Image export normalization requires the sharp package. ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+function applyOutputFormat(
+  pipeline: import('sharp').Sharp,
+  outputFormat: ImageOutputFormat
+): import('sharp').Sharp {
+  if (outputFormat === 'jpeg') {
+    return pipeline.jpeg({ quality: 95 });
+  }
+
+  if (outputFormat === 'webp') {
+    return pipeline.webp({ quality: 95 });
+  }
+
+  return pipeline.png();
+}
+
+export async function normalizeGeneratedPostImage(
+  buffer: Buffer,
+  options: NormalizeGeneratedPostImageOptions
+) {
+  const sharp = await loadSharp();
+  const metadata = await sharp(buffer, { failOn: 'none' }).metadata();
+
+  if (!metadata.width || !metadata.height) {
+    throw new Error('Generated image did not include readable dimensions.');
+  }
+
+  if (options.isLandscape) {
+    const landscapePipeline = sharp(buffer, { failOn: 'none' });
+    const flattened =
+      options.background === 'transparent'
+        ? landscapePipeline
+        : landscapePipeline.flatten({ background: LAVENDER_BACKGROUND });
+
+    return applyOutputFormat(flattened, options.outputFormat).toBuffer();
+  }
+
+  const generationSize = parseImageDimensions(options.generationSize, 'OPENAI_IMAGE_SIZE');
+  const safeArea = parseImageDimensions(options.safeArea, 'OPENAI_IMAGE_SAFE_AREA');
+  const exportSize = parseImageDimensions(options.exportSize, 'OPENAI_IMAGE_EXPORT_SIZE');
+
+  if (safeArea.width > generationSize.width || safeArea.height > generationSize.height) {
+    throw new Error(
+      `OPENAI_IMAGE_SAFE_AREA (${options.safeArea}) must fit inside OPENAI_IMAGE_SIZE (${options.generationSize}).`
+    );
+  }
+
+  const safeWidthRatio = Math.min(safeArea.width / generationSize.width, 1);
+  const safeHeightRatio = Math.min(safeArea.height / generationSize.height, 1);
+  const cropWidth = Math.max(1, Math.min(metadata.width, Math.round(metadata.width * safeWidthRatio)));
+  const cropHeight = Math.max(1, Math.min(metadata.height, Math.round(metadata.height * safeHeightRatio)));
+  const left = Math.max(0, Math.floor((metadata.width - cropWidth) / 2));
+  const top = Math.max(0, Math.floor((metadata.height - cropHeight) / 2));
+
+  let portraitPipeline = sharp(buffer, { failOn: 'none' })
+    .extract({ left, top, width: cropWidth, height: cropHeight })
+    .resize(exportSize.width, exportSize.height, {
+      fit: 'contain',
+      background: LAVENDER_BACKGROUND,
+    });
+
+  if (options.background !== 'transparent') {
+    portraitPipeline = portraitPipeline.flatten({ background: LAVENDER_BACKGROUND });
+  }
+
+  return applyOutputFormat(portraitPipeline, options.outputFormat).toBuffer();
 }
 
 function escapeXml(value: string) {

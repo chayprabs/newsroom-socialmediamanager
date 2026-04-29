@@ -62,7 +62,8 @@ export function GeneratingPost() {
   };
 
   const hasNoMatches = run?.status === 'no_matches';
-  const hasFailure = Boolean(error || run?.error);
+  const visibleError = run?.error || (!run ? error : '');
+  const hasFailure = run?.status === 'failed' || Boolean(visibleError);
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -135,9 +136,9 @@ export function GeneratingPost() {
                   {log.message}
                 </div>
               ))}
-              {error || run?.error ? (
+              {visibleError ? (
                 <div style={{ fontSize: '12px', color: '#B42318', lineHeight: '1.5' }}>
-                  {error || run?.error}
+                  {visibleError}
                 </div>
               ) : null}
             </div>

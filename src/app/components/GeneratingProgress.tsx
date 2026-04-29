@@ -45,6 +45,8 @@ export function GeneratingProgress() {
     router.push('/dashboard');
   };
 
+  const visibleError = run?.error || (!run ? error : '');
+
   const StepIndicator = ({ status }: { status: string }) => {
     if (status === 'done') {
       return (
@@ -117,9 +119,9 @@ export function GeneratingProgress() {
                     </div>
                   </div>
                 ))}
-                {error || run.error ? (
+                {visibleError ? (
                   <p style={{ fontSize: '12px', color: '#B42318', lineHeight: '1.5', marginTop: '14px' }}>
-                    {error || run.error}
+                    {visibleError}
                   </p>
                 ) : null}
               </div>

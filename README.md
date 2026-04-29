@@ -28,6 +28,12 @@ CRUSTDATA_API_KEY=
 CRUSTDATA_API_VERSION=
 OPENAI_API_KEY=
 OPENAI_IMAGE_MODEL=gpt-image-2
+OPENAI_IMAGE_SIZE=1024x1536
+OPENAI_IMAGE_QUALITY=high
+OPENAI_IMAGE_FORMAT=png
+OPENAI_IMAGE_BACKGROUND=opaque
+OPENAI_IMAGE_EXPORT_SIZE=1080x1350
+OPENAI_IMAGE_SAFE_AREA=1024x1280
 ```
 
 Run the app:
@@ -85,7 +91,16 @@ NEWSROOM_COOKIE_SECURE=0
 OPENAI_IMAGE_SIZE=1024x1536
 OPENAI_IMAGE_QUALITY=high
 OPENAI_IMAGE_FORMAT=png
+OPENAI_IMAGE_BACKGROUND=opaque
+OPENAI_IMAGE_EXPORT_SIZE=1080x1350
+OPENAI_IMAGE_SAFE_AREA=1024x1280
 ```
+
+## Cost Optimization
+
+Anthropic prompt caching is enabled for the static runtime knowledge files used by Sonnet. Stages that only need editorial guidance send a stable system prefix of project context plus `base/base.md` and mark `base.md` with `cache_control: { "type": "ephemeral" }`. Stages that need visual guidance send project context plus `base/base.md` plus `design/design.md` and mark `design.md`, so the full stable prefix is cacheable. Dynamic run data stays in the user message and is not part of the cached prefix.
+
+To verify caching, open a run's `runs/<runId>/usage_summary.json` or the Usage section on the run detail page. The first Sonnet call for a prefix should show `cache_creation_input_tokens`; later calls with the same prefix should show `cache_read_input_tokens` and much lower uncached `input_tokens`. If `cache_read_input_tokens` stays at `0` across later calls, the prefix is not being reused byte-for-byte.
 
 ## Auth
 

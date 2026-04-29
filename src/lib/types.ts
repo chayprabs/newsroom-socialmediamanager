@@ -35,6 +35,7 @@ export interface CandidateSpec {
   rationale?: string;
   crustdata_query: {
     endpoint: string;
+    intent?: string;
     params: Record<string, unknown>;
   };
   visual_template: string;
@@ -77,6 +78,7 @@ export interface RunState {
   image_filename?: string;
   image_mime_type?: string;
   image_model?: string;
+  usage_summary?: UsageSummary;
   saved_at?: string;
   error?: string;
 }
@@ -87,4 +89,24 @@ export interface RunSummary {
   date: string;
   status: RunStatus;
   image_url?: string;
+}
+
+export interface UsageStageSummary {
+  stage: string;
+  sonnet_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_creation_input_tokens: number;
+  cache_read_input_tokens: number;
+}
+
+export interface UsageSummary {
+  run_id: string;
+  generated_at: string;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cache_reads: number;
+  total_cache_writes: number;
+  total_sonnet_calls: number;
+  by_stage: UsageStageSummary[];
 }

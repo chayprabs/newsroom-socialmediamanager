@@ -7,6 +7,10 @@ import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
 
+function formatTokenCount(value: number) {
+  return new Intl.NumberFormat('en-US').format(value);
+}
+
 export function RunDetail() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -105,6 +109,64 @@ export function RunDetail() {
                   </div>
                 </div>
               </div>
+
+              {run.usage_summary && (
+                <details
+                  style={{
+                    marginBottom: '28px',
+                    borderTop: '0.5px solid #E5E5E5',
+                    borderBottom: '0.5px solid #E5E5E5',
+                    paddingTop: '12px',
+                    paddingBottom: '12px',
+                    color: '#777',
+                    fontSize: '12px',
+                  }}
+                >
+                  <summary style={{ cursor: 'pointer', color: '#555', fontSize: '13px', fontWeight: 500 }}>
+                    Usage
+                  </summary>
+                  <div style={{ paddingTop: '14px' }}>
+                    <div className="grid grid-cols-3" style={{ gap: '12px', marginBottom: '14px' }}>
+                      <div>
+                        <p style={{ color: '#999', marginBottom: '3px' }}>Tokens in</p>
+                        <p style={{ color: '#111' }}>{formatTokenCount(run.usage_summary.total_input_tokens)}</p>
+                      </div>
+                      <div>
+                        <p style={{ color: '#999', marginBottom: '3px' }}>Tokens out</p>
+                        <p style={{ color: '#111' }}>{formatTokenCount(run.usage_summary.total_output_tokens)}</p>
+                      </div>
+                      <div>
+                        <p style={{ color: '#999', marginBottom: '3px' }}>Sonnet calls</p>
+                        <p style={{ color: '#111' }}>{formatTokenCount(run.usage_summary.total_sonnet_calls)}</p>
+                      </div>
+                    </div>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                      <thead>
+                        <tr style={{ color: '#999', textAlign: 'left', borderBottom: '0.5px solid #E5E5E5' }}>
+                          <th style={{ fontWeight: 400, padding: '0 8px 8px 0' }}>Stage</th>
+                          <th style={{ fontWeight: 400, padding: '0 8px 8px', textAlign: 'right' }}>Calls</th>
+                          <th style={{ fontWeight: 400, padding: '0 8px 8px', textAlign: 'right' }}>In</th>
+                          <th style={{ fontWeight: 400, padding: '0 8px 8px', textAlign: 'right' }}>Out</th>
+                          <th style={{ fontWeight: 400, padding: '0 8px 8px', textAlign: 'right' }}>Cache read</th>
+                          <th style={{ fontWeight: 400, padding: '0 0 8px 8px', textAlign: 'right' }}>Cache write</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {run.usage_summary.by_stage.map((stage) => (
+                          <tr key={stage.stage} style={{ borderBottom: '0.5px solid #F0F0F0' }}>
+                            <td style={{ padding: '8px 8px 8px 0', color: '#555' }}>{stage.stage}</td>
+                            <td style={{ padding: '8px', textAlign: 'right' }}>{formatTokenCount(stage.sonnet_calls)}</td>
+                            <td style={{ padding: '8px', textAlign: 'right' }}>{formatTokenCount(stage.input_tokens)}</td>
+                            <td style={{ padding: '8px', textAlign: 'right' }}>{formatTokenCount(stage.output_tokens)}</td>
+                            <td style={{ padding: '8px', textAlign: 'right' }}>{formatTokenCount(stage.cache_read_input_tokens)}</td>
+                            <td style={{ padding: '8px 0 8px 8px', textAlign: 'right' }}>{formatTokenCount(stage.cache_creation_input_tokens)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              )}
 
               <div className="flex items-center justify-center gap-2">
                 <button onClick={() => router.push('/dashboard')} className="transition-all" style={{ backgroundColor: '#fff', border: '0.5px solid #E5E5E5', color: '#000', height: '36px', paddingLeft: '14px', paddingRight: '14px', fontSize: '13px', borderRadius: '8px', cursor: 'pointer' }}>

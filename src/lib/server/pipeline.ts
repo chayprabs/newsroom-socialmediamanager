@@ -1,9 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import type { CandidateSpec, GeneratedPostData, GenerationStep, RunState } from '../types';
-import { callAnthropic, callCrustdata, callGrok, generateOpenAiImage, isOpenAiImageConfigured } from './clients';
-import { extractJsonObject } from './json';
-import { buildPostImagePrompt, renderPostSvg } from './image';
 import {
+  type AnthropicTextBlock,
+  callAnthropicWithResponse,
+  callCrustdata,
+  callGrok,
+  generateOpenAiImage,
+  isOpenAiImageConfigured,
+} from './clients';
+import { logSonnetUsage } from '../pipeline/tokenLogger';
+import { extractJsonObject } from './json';
+import { buildPostImagePrompt, normalizeGeneratedPostImage, renderPostSvg } from './image';
+import {
+  formatEndpointCapabilitiesForPrompt,
+  getEndpointCapability,
+  normalizeCrustdataEndpoint,
+  usableEndpointCapabilities,
+  type CrustdataEndpointCapability,
+} from './clients/crustdata/endpoint_capabilities';
+import {
+  appendRunArtifact,
   readMarkdown,
   readRun,
   writeRun,
@@ -11,30 +27,59 @@ import {
   writeRunBinaryArtifact,
 } from './storage';
 
-const CONFIRMED_CRUSTDATA_ENDPOINTS = [
-  '/company/identify',
-  '/company/search/autocomplete',
-  '/company/search',
-  '/company/enrich',
-  '/person/search/autocomplete',
-  '/person/search',
-  '/person/enrich',
-  '/job/search',
-  '/web/enrich/live',
-] as const;
+type FeasibilityResult = {
+  feasible: boolean;
+  reason: string;
+  mapped_endpoints: string[];
+};
 
-function normalizeEndpoint(endpoint: string) {
-  return endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+type CandidateForValidation = Omit<Partial<CandidateSpec>, 'crustdata_query'> & {
+  candidate_id?: string;
+  feasible?: boolean;
+  reason?: string;
+  infeasibility_reason?: string;
+  crustdata_query?: {
+    endpoint?: string;
+    intent?: string;
+    params?: Record<string, unknown>;
+  };
+};
+
+type ScoredCandidate = Partial<CandidateSpec> & {
+  candidate_id: string;
+};
+
+type RuntimeKnowledgeFile = 'base' | 'design';
+type RuntimeKnowledge = Partial<Record<RuntimeKnowledgeFile, string>>;
+
+const FEASIBILITY_LOG_FILENAME = 'pipeline.log';
+const MAX_DISCOVERY_CANDIDATES = 10;
+const STATIC_PROJECT_CONTEXT = `Newsroom is Crustdata's internal pipeline for turning live tech/startup trend signals into API-backed data posts.
+Use the cached knowledge files as the source of truth for editorial fit, topic scope, voice, visual conventions, and pipeline constraints.
+Keep stage outputs concise, structured, and faithful to the supplied runtime data.
+Do not invent data, endpoints, sources, companies, metrics, or claims.`;
+
+const UNSUPPORTED_QUESTION_PATTERNS = [
+  {
+    pattern: /\bsentiment\b/i,
+    reason: 'Crustdata has no verified endpoint for sentiment analysis.',
+  },
+  {
+    pattern: /\b(hn|hacker news)\s+comments?\b/i,
+    reason: 'Crustdata has no verified endpoint for Hacker News comment analysis.',
+  },
+  {
+    pattern: /\bcomment\s+sentiment\b/i,
+    reason: 'Crustdata has no verified endpoint for comment sentiment analysis.',
+  },
+];
+
+function isUsableCrustdataEndpoint(endpoint: string) {
+  return getEndpointCapability(endpoint)?.availability === 'usable';
 }
 
-function isConfirmedCrustdataEndpoint(endpoint: string) {
-  return CONFIRMED_CRUSTDATA_ENDPOINTS.includes(
-    normalizeEndpoint(endpoint) as (typeof CONFIRMED_CRUSTDATA_ENDPOINTS)[number]
-  );
-}
-
-function formatConfirmedEndpoints() {
-  return CONFIRMED_CRUSTDATA_ENDPOINTS.map((endpoint) => `- ${endpoint}`).join('\n');
+function formatUsableEndpoints() {
+  return usableEndpointCapabilities().map((capability) => `- ${capability.endpoint}`).join('\n');
 }
 
 function now() {
@@ -94,20 +139,584 @@ async function noMatches(run: RunState, message: string) {
   });
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isPresentParam(name: string, value: unknown) {
+  if (value === null || value === undefined) return false;
+  if (name === 'query' && typeof value === 'string') return true;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (isRecord(value)) return Object.keys(value).length > 0;
+  return true;
+}
+
+function asStringArray(value: unknown) {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
+}
+
+function isKnownFieldPath(field: string, fields?: readonly string[], groups?: readonly string[]) {
+  if (fields?.includes(field)) return true;
+  return Boolean(groups?.some((group) => field === group || field.startsWith(`${group}.`)));
+}
+
+function unsupportedQuestionReason(candidateSpec: CandidateForValidation) {
+  const text = [
+    candidateSpec.headline,
+    candidateSpec.subhead,
+    candidateSpec.rationale,
+    candidateSpec.expected_data_shape,
+    candidateSpec.crustdata_query?.intent,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const match = UNSUPPORTED_QUESTION_PATTERNS.find(({ pattern }) => pattern.test(text));
+  return match?.reason;
+}
+
+function countFilterConditions(value: unknown): number {
+  if (!isRecord(value)) return 0;
+  if (Array.isArray(value.conditions)) {
+    return value.conditions.reduce((total, condition) => total + countFilterConditions(condition), 0);
+  }
+  return typeof value.field === 'string' ? 1 : 0;
+}
+
+function validateDataRichness(capability: CrustdataEndpointCapability, params: Record<string, unknown>) {
+  if (capability.endpoint !== '/company/search' && capability.endpoint !== '/person/search' && capability.endpoint !== '/job/search') {
+    return null;
+  }
+
+  const conditionCount = countFilterConditions(params.filters);
+  if (conditionCount > 5) {
+    return `${capability.endpoint} query is too narrow for candidate selection: use at most 5 filter conditions so the query is likely to return enough data.`;
+  }
+
+  if (
+    typeof params.limit === 'number' &&
+    params.limit > 0 &&
+    params.limit < 5 &&
+    !('aggregations' in params)
+  ) {
+    return `${capability.endpoint} query is too narrow for a chart: use limit 0 with aggregations or request at least 5 rows.`;
+  }
+
+  return null;
+}
+
+function validateRequiredParams(capability: CrustdataEndpointCapability, params: Record<string, unknown>) {
+  if (capability.required_one_of?.length) {
+    const present = capability.required_one_of.filter((param) => isPresentParam(param, params[param]));
+
+    if (present.length === 0) {
+      return `Missing required identifier param: provide exactly one of ${capability.required_one_of.join(', ')}.`;
+    }
+
+    if (present.length > 1) {
+      return `Provide exactly one identifier param for ${capability.endpoint}; received ${present.join(', ')}.`;
+    }
+  }
+
+  const directRequiredParams = capability.required_params.filter((param) => !param.startsWith('exactly one of '));
+  const missing = directRequiredParams.filter((param) => !isPresentParam(param, params[param]));
+
+  if (missing.length) {
+    return `Missing required param${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}.`;
+  }
+
+  return null;
+}
+
+function validateParamNames(capability: CrustdataEndpointCapability, params: Record<string, unknown>) {
+  const allowed = new Set([
+    ...capability.required_params.filter((param) => !param.startsWith('exactly one of ')),
+    ...(capability.required_one_of ?? []),
+    ...capability.optional_params,
+  ]);
+  const unknown = Object.keys(params).filter((param) => !allowed.has(param));
+
+  if (unknown.length) {
+    return `Unsupported param${unknown.length === 1 ? '' : 's'} for ${capability.endpoint}: ${unknown.join(', ')}.`;
+  }
+
+  return null;
+}
+
+function validateFilterTree(
+  value: unknown,
+  capability: CrustdataEndpointCapability,
+  path = 'filters'
+): string | null {
+  if (!isRecord(value)) {
+    return `${path} must be an object.`;
+  }
+
+  if ('conditions' in value || 'op' in value) {
+    const op = value.op;
+    if (op !== 'and' && op !== 'or') {
+      return `${path}.op must be "and" or "or".`;
+    }
+
+    if (!Array.isArray(value.conditions) || value.conditions.length === 0) {
+      return `${path}.conditions must be a non-empty array.`;
+    }
+
+    for (let index = 0; index < value.conditions.length; index += 1) {
+      const issue = validateFilterTree(value.conditions[index], capability, `${path}.conditions[${index}]`);
+      if (issue) return issue;
+    }
+
+    return null;
+  }
+
+  const field = value.field;
+  const type = value.type;
+
+  if (typeof field !== 'string' || !field.trim()) {
+    return `${path}.field is required.`;
+  }
+
+  if (capability.valid_filter_fields && !capability.valid_filter_fields.includes(field)) {
+    return `Unsupported filter field for ${capability.endpoint}: ${field}.`;
+  }
+
+  if (typeof type !== 'string' || !type.trim()) {
+    return `${path}.type is required.`;
+  }
+
+  if (capability.valid_operators && !capability.valid_operators.includes(type)) {
+    return `Unsupported filter operator for ${capability.endpoint}: ${type}.`;
+  }
+
+  if (!['is_null', 'is_not_null'].includes(type) && !('value' in value) && type !== 'geo_distance') {
+    return `${path}.value is required for operator ${type}.`;
+  }
+
+  if ((type === 'in' || type === 'not_in') && !Array.isArray(value.value)) {
+    return `${path}.value must be an array for operator ${type}.`;
+  }
+
+  return null;
+}
+
+function validateFieldList(
+  capability: CrustdataEndpointCapability,
+  value: unknown,
+  paramName: 'fields' | 'field'
+) {
+  if (paramName === 'field') {
+    if (typeof value !== 'string' || !value.trim()) {
+      return 'field must be a non-empty string.';
+    }
+
+    if (!isKnownFieldPath(value, capability.valid_return_fields, capability.valid_field_groups)) {
+      return `Unsupported autocomplete field for ${capability.endpoint}: ${value}.`;
+    }
+
+    return null;
+  }
+
+  const fields = asStringArray(value);
+  if (!fields) {
+    return 'fields must be an array of strings.';
+  }
+
+  const invalid = fields.filter(
+    (field) => !isKnownFieldPath(field, capability.valid_return_fields, capability.valid_field_groups)
+  );
+
+  if (invalid.length) {
+    return `Unsupported fields for ${capability.endpoint}: ${invalid.join(', ')}.`;
+  }
+
+  return null;
+}
+
+function validateSorts(capability: CrustdataEndpointCapability, value: unknown) {
+  if (!Array.isArray(value)) {
+    return 'sorts must be an array.';
+  }
+
+  for (let index = 0; index < value.length; index += 1) {
+    const sort = value[index];
+    if (!isRecord(sort)) {
+      return `sorts[${index}] must be an object.`;
+    }
+
+    const column = sort.column ?? sort.field;
+    if (typeof column !== 'string' || !column.trim()) {
+      return `sorts[${index}] must include column or field.`;
+    }
+
+    if (!isKnownFieldPath(column, capability.valid_sort_fields, capability.valid_field_groups)) {
+      return `Unsupported sort field for ${capability.endpoint}: ${column}.`;
+    }
+
+    if (sort.order !== 'asc' && sort.order !== 'desc') {
+      return `sorts[${index}].order must be "asc" or "desc".`;
+    }
+  }
+
+  return null;
+}
+
+function validateAggregations(capability: CrustdataEndpointCapability, value: unknown) {
+  if (!Array.isArray(value)) {
+    return 'aggregations must be an array.';
+  }
+
+  if (!capability.valid_aggregation_columns) {
+    return `${capability.endpoint} does not support aggregations in the audited registry.`;
+  }
+
+  for (let index = 0; index < value.length; index += 1) {
+    const aggregation = value[index];
+    if (!isRecord(aggregation)) {
+      return `aggregations[${index}] must be an object.`;
+    }
+
+    if (aggregation.type !== 'count' && aggregation.type !== 'group_by') {
+      return `aggregations[${index}].type must be "count" or "group_by".`;
+    }
+
+    if (aggregation.type === 'group_by') {
+      if (typeof aggregation.column !== 'string' || !aggregation.column.trim()) {
+        return `aggregations[${index}].column is required for group_by.`;
+      }
+
+      if (!capability.valid_aggregation_columns.includes(aggregation.column)) {
+        return `Unsupported aggregation column for ${capability.endpoint}: ${aggregation.column}.`;
+      }
+
+      if (aggregation.agg !== 'count') {
+        return `aggregations[${index}].agg must be "count".`;
+      }
+
+      const size = aggregation.size;
+      if (size !== undefined) {
+        if (typeof size !== 'number' || !Number.isInteger(size) || size < 1 || size > 1000) {
+          return `aggregations[${index}].size must be an integer from 1 to 1000.`;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function validateLimit(capability: CrustdataEndpointCapability, value: unknown) {
+  if (value === undefined || !capability.limit) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    return 'limit must be an integer.';
+  }
+  if (value < capability.limit.min || value > capability.limit.max) {
+    return `limit must be between ${capability.limit.min} and ${capability.limit.max} for ${capability.endpoint}.`;
+  }
+  return null;
+}
+
+function validateEndpointSpecificRules(capability: CrustdataEndpointCapability, params: Record<string, unknown>) {
+  if ('filters' in params) {
+    const issue = validateFilterTree(params.filters, capability);
+    if (issue) return issue;
+  }
+
+  if ('fields' in params) {
+    const issue = validateFieldList(capability, params.fields, 'fields');
+    if (issue) return issue;
+  }
+
+  if ('field' in params) {
+    const issue = validateFieldList(capability, params.field, 'field');
+    if (issue) return issue;
+  }
+
+  if ('sorts' in params) {
+    const issue = validateSorts(capability, params.sorts);
+    if (issue) return issue;
+  }
+
+  if ('aggregations' in params) {
+    const issue = validateAggregations(capability, params.aggregations);
+    if (issue) return issue;
+  }
+
+  const limitIssue = validateLimit(capability, params.limit);
+  if (limitIssue) return limitIssue;
+
+  const richnessIssue = validateDataRichness(capability, params);
+  if (richnessIssue) return richnessIssue;
+
+  if (capability.endpoint === '/web/enrich/live') {
+    const urls = asStringArray(params.urls);
+    if (!urls) return 'urls must be an array of strings.';
+    if (urls.length < 1 || urls.length > 10) return 'urls must contain between 1 and 10 URLs.';
+    const invalidUrl = urls.find((url) => !/^https?:\/\//i.test(url));
+    if (invalidUrl) return `URL must include http:// or https://: ${invalidUrl}.`;
+  }
+
+  if (capability.endpoint === '/person/enrich') {
+    for (const param of capability.required_one_of ?? []) {
+      const value = params[param];
+      if (Array.isArray(value) && value.length > 25) {
+        return `${param} accepts at most 25 values.`;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function validateFeasibility(candidateSpec: CandidateForValidation): FeasibilityResult {
+  const aiRejected = candidateSpec.feasible === false;
+  if (aiRejected) {
+    return {
+      feasible: false,
+      reason: `Reframer marked infeasible: ${
+        candidateSpec.reason || candidateSpec.infeasibility_reason || 'no usable Crustdata endpoint fits this trend'
+      }.`,
+      mapped_endpoints: [],
+    };
+  }
+
+  const unsupportedReason = unsupportedQuestionReason(candidateSpec);
+  if (unsupportedReason) {
+    return { feasible: false, reason: unsupportedReason, mapped_endpoints: [] };
+  }
+
+  const endpoint = candidateSpec.crustdata_query?.endpoint;
+  if (typeof endpoint !== 'string' || !endpoint.trim()) {
+    return { feasible: false, reason: 'crustdata_query.endpoint is required.', mapped_endpoints: [] };
+  }
+
+  const normalizedEndpoint = normalizeCrustdataEndpoint(endpoint);
+  const capability = getEndpointCapability(normalizedEndpoint);
+  if (!capability) {
+    return {
+      feasible: false,
+      reason: `Unknown Crustdata endpoint: ${normalizedEndpoint}.`,
+      mapped_endpoints: [],
+    };
+  }
+
+  if (capability.availability !== 'usable') {
+    return {
+      feasible: false,
+      reason: `${normalizedEndpoint} is not enabled for this Newsroom run: ${
+        capability.unavailable_reason || 'endpoint is unavailable in the audited registry'
+      }.`,
+      mapped_endpoints: [normalizedEndpoint],
+    };
+  }
+
+  const intent = candidateSpec.crustdata_query?.intent;
+  if (typeof intent !== 'string' || !intent.trim()) {
+    return {
+      feasible: false,
+      reason: `crustdata_query.intent is required and must be one of: ${capability.supported_intents.join(', ')}.`,
+      mapped_endpoints: [normalizedEndpoint],
+    };
+  }
+
+  if (!capability.supported_intents.includes(intent)) {
+    return {
+      feasible: false,
+      reason: `Intent "${intent}" does not map to ${normalizedEndpoint}; supported intents are ${capability.supported_intents.join(
+        ', '
+      )}.`,
+      mapped_endpoints: [normalizedEndpoint],
+    };
+  }
+
+  const params = candidateSpec.crustdata_query?.params;
+  if (!isRecord(params)) {
+    return { feasible: false, reason: 'crustdata_query.params must be an object.', mapped_endpoints: [normalizedEndpoint] };
+  }
+
+  const paramNameIssue = validateParamNames(capability, params);
+  if (paramNameIssue) {
+    return { feasible: false, reason: paramNameIssue, mapped_endpoints: [normalizedEndpoint] };
+  }
+
+  const requiredIssue = validateRequiredParams(capability, params);
+  if (requiredIssue) {
+    return { feasible: false, reason: requiredIssue, mapped_endpoints: [normalizedEndpoint] };
+  }
+
+  const endpointSpecificIssue = validateEndpointSpecificRules(capability, params);
+  if (endpointSpecificIssue) {
+    return { feasible: false, reason: endpointSpecificIssue, mapped_endpoints: [normalizedEndpoint] };
+  }
+
+  return {
+    feasible: true,
+    reason: `Mapped to ${normalizedEndpoint} (${intent}) in the audited Crustdata registry.`,
+    mapped_endpoints: [normalizedEndpoint],
+  };
+}
+
+function numericValue(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function aggregationHasData(value: unknown) {
+  if (!Array.isArray(value)) return false;
+
+  return value.some((aggregation) => {
+    if (!isRecord(aggregation)) return false;
+    if (numericValue(aggregation.value) > 0) return true;
+    if (!Array.isArray(aggregation.buckets)) return false;
+    return aggregation.buckets.some((bucket) => isRecord(bucket) && numericValue(bucket.count) > 0);
+  });
+}
+
+function matchEnvelopeHasData(value: unknown, dataKey: 'company_data' | 'person_data') {
+  if (!Array.isArray(value)) return false;
+
+  return value.some((entry) => {
+    if (!isRecord(entry) || !Array.isArray(entry.matches)) return false;
+    return entry.matches.some((match) => isRecord(match) && isRecord(match[dataKey]));
+  });
+}
+
+export function hasCrustdataUsableData(endpoint: string, rawData: unknown) {
+  const normalizedEndpoint = normalizeCrustdataEndpoint(endpoint);
+
+  if (normalizedEndpoint === '/company/identify' || normalizedEndpoint === '/company/enrich') {
+    return matchEnvelopeHasData(rawData, 'company_data');
+  }
+
+  if (normalizedEndpoint === '/person/enrich') {
+    return matchEnvelopeHasData(rawData, 'person_data');
+  }
+
+  if (!isRecord(rawData)) {
+    if (normalizedEndpoint === '/web/enrich/live' && Array.isArray(rawData)) {
+      return rawData.some(
+        (entry) =>
+          isRecord(entry) &&
+          entry.success === true &&
+          (typeof entry.content === 'string' ? entry.content.trim().length > 0 : typeof entry.title === 'string')
+      );
+    }
+    return false;
+  }
+
+  if (normalizedEndpoint === '/company/search') {
+    return (
+      (Array.isArray(rawData.companies) && rawData.companies.length > 0) ||
+      numericValue(rawData.total_count) > 0
+    );
+  }
+
+  if (normalizedEndpoint === '/person/search') {
+    return (
+      (Array.isArray(rawData.profiles) && rawData.profiles.length > 0) ||
+      numericValue(rawData.total_count) > 0
+    );
+  }
+
+  if (normalizedEndpoint === '/job/search') {
+    return (
+      (Array.isArray(rawData.job_listings) && rawData.job_listings.length > 0) ||
+      numericValue(rawData.total_count) > 0 ||
+      aggregationHasData(rawData.aggregations)
+    );
+  }
+
+  if (normalizedEndpoint === '/company/search/autocomplete' || normalizedEndpoint === '/person/search/autocomplete') {
+    return Array.isArray(rawData.suggestions) && rawData.suggestions.length > 0;
+  }
+
+  return true;
+}
+
+function noUsableDataMessage(endpoint: string) {
+  return `Crustdata returned no usable data for ${endpoint}. The query was structurally valid, but it did not return enough rows or matches to build a trustworthy chart.`;
+}
+
+function scoreTotal(candidate: Pick<CandidateSpec, 'scores'>) {
+  return typeof candidate.scores?.total === 'number' ? candidate.scores.total : 0;
+}
+
+function getCandidateId(candidate: CandidateForValidation) {
+  return typeof candidate.candidate_id === 'string' ? candidate.candidate_id : '';
+}
+
+function normalizeValidatedCandidate(candidate: CandidateForValidation, scoredById: Map<string, ScoredCandidate>) {
+  const candidateId = getCandidateId(candidate);
+  const scoredCandidate = scoredById.get(candidateId);
+  const rawEndpoint = candidate.crustdata_query?.endpoint || '';
+  const endpoint = rawEndpoint.trim() ? normalizeCrustdataEndpoint(rawEndpoint) : '';
+
+  return {
+    candidate_id: candidateId,
+    headline: candidate.headline || scoredCandidate?.headline || 'Untitled idea',
+    subhead: candidate.subhead || scoredCandidate?.subhead || candidate.rationale || '',
+    source: candidate.source || scoredCandidate?.source,
+    source_url: candidate.source_url || scoredCandidate?.source_url,
+    scores: candidate.scores || scoredCandidate?.scores,
+    matched_archetype: candidate.matched_archetype || scoredCandidate?.matched_archetype,
+    matched_angle: candidate.matched_angle || scoredCandidate?.matched_angle,
+    matched_visual: candidate.matched_visual || scoredCandidate?.matched_visual,
+    rationale: candidate.rationale || scoredCandidate?.rationale,
+    crustdata_query: {
+      endpoint,
+      intent: candidate.crustdata_query?.intent,
+      params: candidate.crustdata_query?.params || {},
+    },
+    visual_template: candidate.visual_template || candidate.matched_visual || scoredCandidate?.visual_template || 'bar',
+    expected_data_shape: candidate.expected_data_shape || scoredCandidate?.expected_data_shape,
+  } satisfies CandidateSpec;
+}
+
+async function logFeasibilityDecision(
+  runId: string,
+  candidate: CandidateForValidation,
+  decision: FeasibilityResult
+) {
+  const proposedEndpoint =
+    typeof candidate.crustdata_query?.endpoint === 'string' && candidate.crustdata_query.endpoint.trim()
+      ? normalizeCrustdataEndpoint(candidate.crustdata_query.endpoint)
+      : '';
+
+  const entry = {
+    candidate_id: getCandidateId(candidate) || 'unknown',
+    proposed_endpoint: proposedEndpoint,
+    feasibility: decision.feasible ? 'feasible' : 'infeasible',
+    reason: decision.reason,
+    mapped_endpoints: decision.mapped_endpoints,
+  };
+
+  await appendRunArtifact(runId, FEASIBILITY_LOG_FILENAME, `${JSON.stringify(entry)}\n`);
+  return entry;
+}
+
 async function createPostImageArtifact(
   runId: string,
   data: GeneratedPostData,
+  base: string,
   design: string,
   template: string,
   caption: string
 ) {
-  const prompt = buildPostImagePrompt(data, design, template, caption);
+  const prompt = buildPostImagePrompt(data, base, design, template, caption);
   await writeRunArtifact(runId, 'image-prompt.txt', prompt);
 
   if (isOpenAiImageConfigured()) {
-    const image = await generateOpenAiImage(prompt);
+    const image = await generateOpenAiImage(prompt, { template });
+    const exportedBuffer = await normalizeGeneratedPostImage(image.buffer, {
+      generationSize: image.size,
+      exportSize: image.exportSize,
+      safeArea: image.safeArea,
+      outputFormat: image.outputFormat,
+      background: image.background,
+      isLandscape: image.isLandscape,
+    });
     const filename = `post.${image.extension}`;
-    const imagePath = await writeRunBinaryArtifact(runId, filename, image.buffer);
+    const imagePath = await writeRunBinaryArtifact(runId, filename, exportedBuffer);
 
     if (image.revisedPrompt) {
       await writeRunArtifact(runId, 'openai-revised-image-prompt.txt', image.revisedPrompt);
@@ -118,7 +727,9 @@ async function createPostImageArtifact(
       filename,
       mimeType: image.mimeType,
       model: image.model,
-      logMessage: `Generated image with OpenAI ${image.model}.`,
+      logMessage: image.isLandscape
+        ? `Generated landscape image with OpenAI ${image.model} at ${image.size}.`
+        : `Generated image with OpenAI ${image.model} at ${image.size} and exported ${image.exportSize}.`,
     };
   }
 
@@ -130,6 +741,81 @@ async function createPostImageArtifact(
     model: 'local-svg-fallback',
     logMessage: 'Rendered local SVG fallback because OPENAI_API_KEY is not configured.',
   };
+}
+
+async function readRuntimeKnowledge(requiredFiles: RuntimeKnowledgeFile[]) {
+  const entries = await Promise.all(
+    requiredFiles.map(async (file) => [file, await readMarkdown(file)] as const)
+  );
+  const knowledge = Object.fromEntries(entries) as RuntimeKnowledge;
+
+  for (const file of requiredFiles) {
+    if (!knowledge[file]?.trim()) {
+      throw new Error(
+        `${file}/${file}.md is empty. Add the ${file === 'base' ? 'editorial DNA' : 'visual spec'} before running the pipeline.`
+      );
+    }
+  }
+
+  return knowledge;
+}
+
+function cachedRuntimeSystem(
+  knowledge: RuntimeKnowledge,
+  requiredFiles: RuntimeKnowledgeFile[],
+  stageInstruction: string
+): AnthropicTextBlock[] {
+  const blocks: AnthropicTextBlock[] = [
+    {
+      type: 'text',
+      text: STATIC_PROJECT_CONTEXT,
+    },
+  ];
+  const lastCachedFile = requiredFiles[requiredFiles.length - 1];
+
+  if (requiredFiles.includes('base')) {
+    const block: AnthropicTextBlock = {
+      type: 'text',
+      text: knowledge.base || '',
+    };
+
+    if (lastCachedFile === 'base') {
+      block.cache_control = { type: 'ephemeral' };
+    }
+
+    blocks.push(block);
+  }
+
+  if (requiredFiles.includes('design')) {
+    const block: AnthropicTextBlock = {
+      type: 'text',
+      text: knowledge.design || '',
+    };
+
+    if (lastCachedFile === 'design') {
+      block.cache_control = { type: 'ephemeral' };
+    }
+
+    blocks.push(block);
+  }
+
+  blocks.push({
+    type: 'text',
+    text: stageInstruction,
+  });
+
+  return blocks;
+}
+
+async function callLoggedAnthropic(
+  stage: string,
+  runId: string,
+  prompt: string,
+  options?: { system?: AnthropicTextBlock[] }
+) {
+  const { text, response } = await callAnthropicWithResponse(prompt, options);
+  logSonnetUsage(stage, runId, response);
+  return text;
 }
 
 function requireRun(run: RunState | null): RunState {
@@ -160,31 +846,47 @@ export async function discoverCandidates(runId: string) {
 
   try {
     run = await writeRun({ ...run, status: 'discovering', error: undefined });
-    run = await appendLog(run, 'Reading editorial base and visual design spec.');
+    run = await appendLog(run, 'Reading editorial base.');
 
-    const [base, design] = await Promise.all([readMarkdown('base'), readMarkdown('design')]);
-    if (!base.trim()) {
-      throw new Error('base/base.md is empty. Add the editorial DNA before running discovery.');
-    }
-    if (!design.trim()) {
-      throw new Error('design/design.md is empty. Add the visual spec before running discovery.');
-    }
+    const baseKnowledge = await readRuntimeKnowledge(['base']);
 
     run = await appendLog(run, 'Asking Claude to construct a Grok trend discovery query.');
-    const grokQuery = await callAnthropic(`You are building Newsroom for Crustdata.
+    const grokQuery = await callLoggedAnthropic(
+      'stage_1_discovery',
+      runId,
+      `Write one concise Grok/X live-search prompt to find current tech/startup conversations that can become Crustdata data posts.
 
-Editorial base:
-${base}
+The downstream Crustdata key can only use these endpoint-backed post shapes:
+- Hiring demand and job-posting counts via /job/search.
+- Company cohorts, rankings, funding/headcount/location/taxonomy comparisons via /company/search.
+- Known-company deep dives via /company/enrich.
+- Founder, alumni, title, employer, skills, and location patterns via /person/search.
+- Known-person enrichment via /person/enrich.
+- Known-URL page fetches via /web/enrich/live.
 
-Visual design spec:
-${design}
+Avoid trends that require unavailable data: professional-network live endpoints, /web/search/live, broad web discovery, sentiment analysis, comment analysis, or anything that needs values Crustdata cannot structurally return.
+Prefer data-rich questions with broad cohorts, rankings, or aggregations. Return plain text only.`,
+      {
+        system: cachedRuntimeSystem(
+          baseKnowledge,
+          ['base'],
+          'You are Stage 1 of Newsroom for Crustdata: create a trend-discovery prompt for Grok/X.'
+        ),
+      }
+    );
 
-Write one concise Grok/X live-search prompt to find current tech/startup conversations that can become Crustdata data posts. Return plain text only.`);
-
-    run = await appendLog(run, 'Querying Grok for candidate trends.');
-    const grokResponse = await callGrok(`Use this search intent to identify 8 current tech/startup trend candidates suitable for Crustdata data posts:
+    const grokCandidatePrompt = `Use this search intent to identify and rank the best ${MAX_DISCOVERY_CANDIDATES} current tech/startup trend candidates suitable for Crustdata data posts:
 
 ${grokQuery}
+
+Return only the strongest ${MAX_DISCOVERY_CANDIDATES} ideas according to your judgment. Rank them from strongest to weakest before returning them. Favor trends that can become:
+- rankings or counts across companies,
+- hiring/job-posting aggregations,
+- founder/alumni/person-search analyses,
+- known-company comparisons.
+
+Prefer candidates with clear recency, concrete entities, public conversation momentum, and a high chance of becoming a Crustdata-backed chart.
+Do not include candidates that require sentiment, comments, professional-network live endpoints, /web/search/live, or unknown data sources.
 
 Return JSON with this exact shape:
 {
@@ -197,38 +899,133 @@ Return JSON with this exact shape:
       "entities": ["company or topic"]
     }
   ]
-}`);
+}`;
+
+    run = await appendLog(run, 'Querying Grok for candidate trends.');
+    let grokResponse: string;
+    let discoverySource = 'Grok';
+    try {
+      grokResponse = await callGrok(grokCandidatePrompt);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      run = await appendLog(run, `Grok discovery failed (${message}). Falling back to Claude candidate generation.`);
+      discoverySource = 'Claude fallback';
+      grokResponse = await callLoggedAnthropic(
+        'stage_1_discovery_fallback',
+        runId,
+        `Grok could not return candidates, so generate ${MAX_DISCOVERY_CANDIDATES} Crustdata-ready fallback candidates yourself.
+
+Use the same search intent and constraints:
+${grokQuery}
+
+The candidates do not need live engagement numbers, but they must be plausible, API-backed, and broad enough for Crustdata data posts.
+Use only these endpoint-backed shapes:
+- /job/search hiring demand, job counts, and group_by aggregations.
+- /company/search company cohorts, funding, headcount, geography, taxonomy, followers, and rankings.
+- /company/enrich known-company profile comparisons.
+- /person/search founder, alumni, employer, title, role, skills, education, and location patterns.
+
+Do not include ideas requiring sentiment, comments, /web/search/live, professional-network live endpoints, or unknown APIs.
+
+Return JSON with this exact shape:
+{
+  "candidates": [
+    {
+      "id": "c_01",
+      "text": "trend text",
+      "source_url": "",
+      "engagement": { "likes": 0, "reposts": 0, "replies": 0 },
+      "entities": ["company or topic"]
+    }
+  ]
+}`,
+        {
+          system: cachedRuntimeSystem(
+            baseKnowledge,
+            ['base'],
+            'You are Stage 1 fallback for Newsroom: produce conservative Crustdata API-ready candidate ideas when Grok is unavailable.'
+          ),
+        }
+      );
+    }
 
     const rawCandidates = extractJsonObject<{ candidates?: unknown[] }>(grokResponse);
-    const rawCandidateList = Array.isArray(rawCandidates.candidates) ? rawCandidates.candidates : [];
-    run = await appendLog(run, `Grok returned ${rawCandidateList.length} candidate trends.`);
+    const rawCandidateList = Array.isArray(rawCandidates.candidates)
+      ? rawCandidates.candidates.slice(0, MAX_DISCOVERY_CANDIDATES)
+      : [];
+    run = await appendLog(run, `${discoverySource} returned ${rawCandidateList.length} candidate trends.`);
 
     if (rawCandidateList.length === 0) {
       return noMatches(run, 'No current trends matched the editorial base. Try finding new ideas again.');
     }
 
-    const judgedResponse = await callAnthropic(`You are Stage 2 of Newsroom: judge and reframe trends into Crustdata API-backed post ideas.
-
-Editorial base:
-${base}
-
-Visual design spec:
-${design}
-
-Candidate trends:
+    const scoredResponse = await callLoggedAnthropic('stage_2_judge', runId, `Candidate trends:
 ${JSON.stringify({ candidates: rawCandidateList }, null, 2)}
 
-Crustdata endpoint constraints:
-Only use endpoints that were verified on the active API key:
-${formatConfirmedEndpoints()}
+Endpoint capability registry:
+${formatEndpointCapabilitiesForPrompt()}
 
-Do not use these currently unavailable endpoints: /web/search/live, /company/professional_network/search/live, /person/professional_network/search/live, /person/professional_network/enrich/live, /job/professional_network/search/live, /professional_network/search/autocomplete.
-
-Score candidates for api_feasibility, recency, archetype_fit, visual_potential, engagement_likelihood, and total. Return only the best three ideas as JSON:
+Score every candidate for api_feasibility, recency, archetype_fit, visual_potential, engagement_likelihood, and total.
+api_feasibility must reflect only the usable endpoints in the registry.
+Give higher api_feasibility to broad, data-rich candidates likely to return enough rows for a chart: cohorts, rankings, aggregations, and known company/person sets.
+Penalize candidates with very narrow filters, single obscure entities, sentiment/comment analysis, unavailable endpoints, or anything that would probably return zero rows.
+Return JSON:
 {
-  "top_3": [
+  "scored_candidates": [
     {
       "candidate_id": "c_01",
+      "scores": { "api_feasibility": 0, "recency": 0, "archetype_fit": 0, "visual_potential": 0, "engagement_likelihood": 0, "total": 0 },
+      "matched_archetype": "name",
+      "matched_angle": "name",
+      "matched_visual": "chart type",
+      "rationale": "one sentence"
+    }
+  ]
+}`, {
+      system: cachedRuntimeSystem(
+        baseKnowledge,
+        ['base'],
+        'You are Stage 2 of Newsroom: score all trend candidates against the editorial rubric and the audited Crustdata endpoint registry.'
+      ),
+    });
+
+    const scored = extractJsonObject<{ scored_candidates?: ScoredCandidate[] }>(scoredResponse);
+    const scoredCandidates = (Array.isArray(scored.scored_candidates) ? scored.scored_candidates : []).filter(
+      (candidate): candidate is ScoredCandidate => typeof candidate?.candidate_id === 'string'
+    );
+
+    if (!scoredCandidates.length) {
+      return noMatches(run, 'No candidates could be scored. Try finding new ideas again.');
+    }
+
+    const scoredById = new Map(scoredCandidates.map((candidate) => [candidate.candidate_id, candidate]));
+    run = await appendLog(run, 'Reading visual design spec for reframing.');
+    const reframeKnowledge = {
+      ...baseKnowledge,
+      ...(await readRuntimeKnowledge(['design'])),
+    };
+    const reframeResponse = await callLoggedAnthropic('stage_2_reframer', runId, `Candidate trends:
+${JSON.stringify({ candidates: rawCandidateList }, null, 2)}
+
+Scored candidates:
+${JSON.stringify({ scored_candidates: scoredCandidates }, null, 2)}
+
+Endpoint capability registry:
+${formatEndpointCapabilitiesForPrompt()}
+
+You have a fixed set of Crustdata endpoints available. Listed above is every endpoint, what it can answer, its supported intents, and required parameters.
+You MUST construct crustdata_query so it maps to one usable endpoint with all required parameters present.
+Do not invent endpoints. Do not invent parameters. Do not assume capabilities not documented here.
+If a candidate trend cannot be answered by a usable endpoint in this list, output feasible: false and explain why.
+Prefer broad query specs that are likely to return enough data for a chart. Avoid over-narrow filters. For /job/search, prefer limit: 0 with count/group_by aggregations when the post needs counts. For search endpoints returning rows, request at least 5 rows. Do not use autocomplete endpoints as final post data unless the candidate is specifically about valid filter-value suggestions.
+
+Return one item for each scored candidate as JSON:
+{
+  "candidates": [
+    {
+      "candidate_id": "c_01",
+      "feasible": true,
+      "reason": "short reason; for feasible candidates, explain the endpoint mapping",
       "headline": "headline",
       "subhead": "subhead",
       "source": "short trend source text",
@@ -238,35 +1035,73 @@ Score candidates for api_feasibility, recency, archetype_fit, visual_potential, 
       "matched_angle": "name",
       "matched_visual": "chart type",
       "rationale": "one sentence",
-      "crustdata_query": { "endpoint": "/company/enrich", "params": {} },
+      "crustdata_query": { "endpoint": "/job/search", "intent": "hiring_analysis", "params": {} },
       "visual_template": "diverging_bar",
       "expected_data_shape": "rows of label/value"
     }
   ]
-}`);
+}`, {
+      system: cachedRuntimeSystem(
+        reframeKnowledge,
+        ['base', 'design'],
+        `You are Stage 2 of Newsroom: reframe scored trends into deterministic Crustdata query specs. Only use these currently usable endpoints:\n${formatUsableEndpoints()}`
+      ),
+    });
 
-    const judged = extractJsonObject<{ top_3?: CandidateSpec[] }>(judgedResponse);
-    const topCandidates = (Array.isArray(judged.top_3) ? judged.top_3 : []).filter(
-      (candidate) =>
-        candidate?.candidate_id &&
-        candidate?.headline &&
-        candidate?.subhead &&
-        candidate?.crustdata_query?.endpoint &&
-        isConfirmedCrustdataEndpoint(candidate.crustdata_query.endpoint)
+    const reframed = extractJsonObject<{ candidates?: CandidateForValidation[]; top_3?: CandidateForValidation[] }>(
+      reframeResponse
     );
+    const reframedCandidates = Array.isArray(reframed.candidates)
+      ? reframed.candidates
+      : Array.isArray(reframed.top_3)
+        ? reframed.top_3
+        : [];
+    const reframedCandidateIds = new Set(reframedCandidates.map(getCandidateId).filter(Boolean));
+    const validationCandidates: CandidateForValidation[] = [
+      ...reframedCandidates,
+      ...scoredCandidates
+        .filter((candidate) => !reframedCandidateIds.has(candidate.candidate_id))
+        .map((candidate) => ({
+          ...candidate,
+          feasible: false,
+          reason: 'Reframer did not return a query spec for this scored candidate.',
+          crustdata_query: { endpoint: '', params: {} },
+        })),
+    ];
+    const validationLogs: RunState['logs'] = [];
+    const feasibleCandidates: CandidateSpec[] = [];
+
+    for (const candidate of validationCandidates) {
+      const normalizedCandidate = normalizeValidatedCandidate(candidate, scoredById);
+      const decision = validateFeasibility(normalizedCandidate);
+      const logEntry = await logFeasibilityDecision(runId, normalizedCandidate, decision);
+
+      validationLogs.push({
+        at: now(),
+        message: `Feasibility ${logEntry.feasibility}: ${logEntry.candidate_id} - ${logEntry.reason}`,
+      });
+
+      if (decision.feasible) {
+        feasibleCandidates.push(normalizedCandidate);
+      }
+    }
+
+    const topCandidates = feasibleCandidates.sort((a, b) => scoreTotal(b) - scoreTotal(a)).slice(0, 3);
 
     if (!topCandidates.length) {
-      return noMatches(
-        run,
-        'No candidates passed the verified Crustdata endpoint filter. Try finding new ideas again.'
-      );
+      run = { ...run, logs: [...run.logs, ...validationLogs] };
+      return noMatches(run, 'No candidates passed the Crustdata feasibility validator. Try finding new ideas again.');
     }
 
     return writeRun({
       ...run,
       status: 'awaiting_selection',
-      candidates: topCandidates.slice(0, 3),
-      logs: [...run.logs, { at: now(), message: 'Candidate judging complete. Awaiting selection.' }],
+      candidates: topCandidates,
+      logs: [
+        ...run.logs,
+        ...validationLogs,
+        { at: now(), message: `Candidate judging complete. ${topCandidates.length} feasible candidate(s) ready.` },
+      ],
     });
   } catch (error) {
     return failRun(run, error);
@@ -308,8 +1143,8 @@ export async function generatePost(runId: string) {
       throw new Error('No selected candidate to generate from.');
     }
     const selectedCandidate = run.selected_candidate;
-    const endpoint = normalizeEndpoint(selectedCandidate.crustdata_query.endpoint);
-    if (!isConfirmedCrustdataEndpoint(endpoint)) {
+    const endpoint = normalizeCrustdataEndpoint(selectedCandidate.crustdata_query.endpoint);
+    if (!isUsableCrustdataEndpoint(endpoint)) {
       throw new Error(`Crustdata endpoint ${endpoint} has not been verified for this API key.`);
     }
 
@@ -322,19 +1157,15 @@ export async function generatePost(runId: string) {
     );
 
     await writeRunArtifact(runId, 'crustdata-response.json', JSON.stringify(rawData, null, 2));
+    if (!hasCrustdataUsableData(endpoint, rawData)) {
+      throw new Error(noUsableDataMessage(endpoint));
+    }
+
     run = await writeRun(updateStep(run, 'fetching_data', 'done'));
     run = await writeRun(updateStep(run, 'finalizing_data', 'running', 'Asking Claude to normalize chart data.'));
 
-    const [base, design] = await Promise.all([readMarkdown('base'), readMarkdown('design')]);
-    const shapedResponse = await callAnthropic(`Normalize this Crustdata response into chart-ready post data and caption.
-
-Editorial base:
-${base}
-
-Design spec:
-${design}
-
-Selected candidate:
+    const baseKnowledge = await readRuntimeKnowledge(['base']);
+    const shapedResponse = await callLoggedAnthropic('stage_5_caption', runId, `Selected candidate:
 ${JSON.stringify(selectedCandidate, null, 2)}
 
 Raw Crustdata response:
@@ -350,7 +1181,13 @@ Return JSON:
     "source_metadata": { "endpoint": "endpoint hit", "fetched_at": "ISO timestamp" }
   },
   "caption": "2-3 sentence caption"
-}`);
+}`, {
+      system: cachedRuntimeSystem(
+        baseKnowledge,
+        ['base'],
+        'You are Stage 5 of Newsroom: normalize Crustdata API output into chart-ready post data and a caption.'
+      ),
+    });
 
     const shaped = extractJsonObject<{ data: GeneratedPostData; caption: string }>(shapedResponse);
     if (!shaped.data?.rows?.length) {
@@ -361,10 +1198,15 @@ Return JSON:
     run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
     run = await writeRun(updateStep(run, 'generating_image', 'running', 'Generating the post image.'));
 
+    const imageKnowledge = {
+      ...baseKnowledge,
+      ...(await readRuntimeKnowledge(['design'])),
+    };
     const imageArtifact = await createPostImageArtifact(
       runId,
       shaped.data,
-      design,
+      imageKnowledge.base || '',
+      imageKnowledge.design || '',
       selectedCandidate.visual_template || selectedCandidate.matched_visual || '',
       shaped.caption
     );
@@ -396,9 +1238,8 @@ export async function regeneratePost(runId: string, editPrompt: string) {
     }
 
     run = await appendLog(run, 'Regenerating post with edit prompt.');
-    const revisedResponse = await callAnthropic(`Revise this chart-ready post data using the user's edit prompt.
-
-Current data:
+    const baseKnowledge = await readRuntimeKnowledge(['base']);
+    const revisedResponse = await callLoggedAnthropic('stage_5_regenerate', runId, `Current data:
 ${JSON.stringify(run.data, null, 2)}
 
 User edit prompt:
@@ -414,14 +1255,24 @@ Return JSON:
     "source_metadata": {}
   },
   "caption": "2-3 sentence caption"
-}`);
+}`, {
+      system: cachedRuntimeSystem(
+        baseKnowledge,
+        ['base'],
+        "You are Stage 5 of Newsroom: revise existing chart-ready post data using the user's edit prompt."
+      ),
+    });
 
     const revised = extractJsonObject<{ data: GeneratedPostData; caption: string }>(revisedResponse);
-    const design = await readMarkdown('design');
+    const imageKnowledge = {
+      ...baseKnowledge,
+      ...(await readRuntimeKnowledge(['design'])),
+    };
     const imageArtifact = await createPostImageArtifact(
       runId,
       revised.data,
-      design,
+      imageKnowledge.base || '',
+      imageKnowledge.design || '',
       run.selected_candidate?.visual_template || run.selected_candidate?.matched_visual || '',
       revised.caption
     );
