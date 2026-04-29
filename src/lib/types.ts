@@ -62,6 +62,30 @@ export interface GeneratedPostData {
   source_metadata?: Record<string, unknown>;
 }
 
+export type RunErrorKind =
+  | 'image_prompt_validation_failed'
+  | 'image_prompt_too_long'
+  | 'openai_image_rejected'
+  | 'generic';
+
+export interface RunErrorDetails {
+  kind: RunErrorKind;
+  /** Short human-readable label, e.g. "Image prompt validation failed". */
+  label: string;
+  /** Required elements still missing on the final attempt (validation failure only). */
+  missing?: string[];
+  /** Soft validator warnings carried alongside the failure. */
+  warnings?: string[];
+  /** Number of Stage 4a Sonnet attempts taken before giving up. */
+  attempts?: number;
+  /** Final prompt length when the hard cap was tripped. */
+  prompt_length_chars?: number;
+  /** Maximum prompt length when the hard cap was tripped. */
+  cap_chars?: number;
+  /** HTTP status code from the upstream OpenAI rejection, when available. */
+  status_code?: number;
+}
+
 export interface RunState {
   run_id: string;
   created_at: string;
@@ -81,6 +105,7 @@ export interface RunState {
   usage_summary?: UsageSummary;
   saved_at?: string;
   error?: string;
+  error_details?: RunErrorDetails;
 }
 
 export interface RunSummary {

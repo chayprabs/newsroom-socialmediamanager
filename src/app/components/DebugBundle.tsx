@@ -7,7 +7,16 @@ interface DebugFile {
   url: string;
 }
 
-export function DebugBundle({ runId, visible }: { runId: string | null; visible: boolean }) {
+interface DebugBundleProps {
+  runId: string | null;
+  visible: boolean;
+  /** Optional substring filter (e.g. "stage_4a_") to scope the listing to one stage. */
+  filter?: string;
+  /** Override the summary label. Defaults to "View debug bundle". */
+  label?: string;
+}
+
+export function DebugBundle({ runId, visible, filter, label }: DebugBundleProps) {
   const [files, setFiles] = useState<DebugFile[]>([]);
 
   useEffect(() => {
@@ -35,15 +44,19 @@ export function DebugBundle({ runId, visible }: { runId: string | null; visible:
     };
   }, [runId, visible]);
 
-  if (!visible || !files.length) {
+  const visibleFiles = filter ? files.filter((file) => file.name.includes(filter)) : files;
+
+  if (!visible || !visibleFiles.length) {
     return null;
   }
 
   return (
     <details style={{ marginTop: '10px' }}>
-      <summary style={{ color: '#555', cursor: 'pointer', fontSize: '12px' }}>View debug bundle</summary>
+      <summary style={{ color: '#555', cursor: 'pointer', fontSize: '12px' }}>
+        {label ?? 'View debug bundle'}
+      </summary>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '8px' }}>
-        {files.map((file) => (
+        {visibleFiles.map((file) => (
           <a
             key={file.name}
             href={file.url}

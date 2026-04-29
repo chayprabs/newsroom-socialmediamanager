@@ -40,7 +40,7 @@
 - [The audited Crustdata endpoint registry](#the-audited-crustdata-endpoint-registry)
 - [Query validation](#query-validation)
 - [Anthropic prompt caching strategy](#anthropic-prompt-caching-strategy)
-- [Image generation with tool‑use guardrails](#image-generation-with-tooluse-guardrails)
+- [Image generation quality](#image-generation-quality)
 - [Per‑run artifacts and observability](#perrun-artifacts-and-observability)
 - [Authentication and middleware](#authentication-and-middleware)
 - [Storage model](#storage-model)
@@ -414,8 +414,8 @@ The strategy is simple but disciplined:
 
 - The system message for every Sonnet call is built from a fixed sequence of `AnthropicTextBlock`s.
 - The first block is `STATIC_PROJECT_CONTEXT` — a constant string defined in `pipeline.ts` and `imagePromptBuilder.ts`. **Same string, byte‑for‑byte, in every call.**
-- The next block is `base.md`, marked with `cache_control: { type: 'ephemeral' }`.
-- For stages that also need visual guidance (the image prompt builder), `design.md` follows, also marked `ephemeral`.
+- The next block is usually `base.md`, marked with `cache_control: { type: 'ephemeral' }`, for editorial stages that need topic scope and voice.
+- Stages that need visual guidance receive `design.md`, also marked `ephemeral`. Stage 4a intentionally reads `design.md` only — it does not load `base.md`.
 - Dynamic per‑run data — candidates, scored results, chart rows — lives in the **user message**, never the cached prefix.
 
 The result: the first Sonnet call in a run pays for `cache_creation_input_tokens`; every subsequent call that reuses the same prefix shows `cache_read_input_tokens` and charges a fraction of the uncached price.
@@ -439,34 +439,29 @@ If `total_cache_reads` stays at zero across later calls, the prefix is not being
 
 ---
 
-## Image generation with tool‑use guardrails
+## Image generation quality
 
-Stage 4 has two sub‑steps: build the image prompt, then call GPT‑Image‑2.
+Stage 4 is split into two sub‑steps:
 
-The build step is the interesting one. Free‑form Sonnet output here would mean parsing markdown, stripping fences, and praying the model doesn't add commentary. Instead, Newsroom forces Sonnet to call a tool:
+1. **Stage 4a — prompt builder.** Sonnet reads `design/design.md`, fills the matching worked-example skeleton, and returns a structured `submit_image_prompt` tool call with `prompt`, `template_used`, `character_count`, and `hex_colors_used`.
+2. **Stage 4b — image call.** The validated prompt is sent to GPT‑Image‑2, then the generated image is normalized/exported in `src/lib/server/image.ts`.
 
-```ts
-{
-  name: 'submit_image_prompt',
-  input_schema: {
-    type: 'object',
-    properties: {
-      prompt: { type: 'string', description: '… under 25000 characters.' },
-      template_used: { type: 'string', description: 'visual_template name from design.md' },
-      character_count: { type: 'integer' }
-    },
-    required: ['prompt', 'template_used', 'character_count']
-  }
-}
-```
+`src/lib/pipeline/imagePromptValidator.ts` runs between 4a and 4b. It blocks prompts that are missing required visual elements: the lavender background hex `#E8E6F5`, `full bleed`/`full-bleed`, exact footer text `Data from: Crustdata`, a `hexagonal` logo description, a do-not-crop headline instruction, at least three literal hex colors, the active canvas size, and the active safe area. It also logs warnings for vague style phrases like `in the Crustdata style`, rainbow/varied color language, and suspicious rounded-bar wording.
 
-The call uses `tool_choice: { type: 'tool', name: 'submit_image_prompt' }`, so Sonnet has no choice but to return structured arguments. The orchestrator then:
+Canvas dimensions come from env at module load:
 
-1. Extracts `prompt`, `template_used`, and `character_count` from the tool call.
-2. Writes both the full prompt and a metadata sidecar (`stage_4_image_prompt.txt`, `stage_4_image_prompt_meta.json`) into `runs/<id>/debug/`.
-3. Enforces a **25,000‑char hard cap** (well below GPT‑Image‑2's 32,000 limit). If exceeded, it logs a `stage_4_prompt_cap_violation` event and throws `ImagePromptTooLongError` with the first/last 500 chars of the offending prompt for debugging.
+| Variable | Default | Used for |
+| --- | --- | --- |
+| `OPENAI_IMAGE_SIZE` | `1024x1536` | GPT‑Image‑2 generation canvas and literal prompt text |
+| `OPENAI_IMAGE_SAFE_AREA` | `1024x1280` | no-crop zone that the prompt requires all content to fit inside |
+| `OPENAI_IMAGE_EXPORT_SIZE` | `1080x1350` | final dashboard/download export |
+| `OPENAI_IMAGE_BACKGROUND` | `opaque` | OpenAI API background mode; prompt still pins lavender `#E8E6F5` |
 
-Only then does the prompt go to GPT‑Image‑2. The rendered image is normalized in `src/lib/server/image.ts` and persisted under the run directory.
+The builder substitutes these env values into `design.md` placeholders and into the Stage 4a system prompt before calling Sonnet, so the same dimensions reach both the model prompt and the OpenAI API call.
+
+When an image fails to match expectations, inspect `runs/<runId>/debug/` or use the **View debug bundle** section in the UI. The most useful files are `stage_4_image_prompt.txt`, `stage_4_image_prompt_meta.json`, `stage_4a_validation_result.json`, `stage_4a_env_snapshot.json`, and `stage_4a_attempt_*.txt`. Validation failures also preserve `stage_4a_validation_failure_*.json`.
+
+`design/design.md` is the source of truth for visual specs. To change the look — background, footer, typography, chart skeletons, color rules, safe-area language — edit `design.md`, not the pipeline code. The code only enforces that the prompt contains the required pieces.
 
 ---
 
@@ -489,6 +484,9 @@ runs/<run_id>/
 │   ├── stage_3_crustdata_query.json
 │   ├── stage_3_crustdata_response.json
 │   ├── stage_3_normalised_data.json
+│   ├── stage_4a_env_snapshot.json
+│   ├── stage_4a_attempt_1.txt
+│   ├── stage_4a_validation_result.json
 │   ├── stage_4_image_prompt.txt
 │   ├── stage_4_image_prompt_meta.json
 │   ├── stage_5_caption_prompt.txt
