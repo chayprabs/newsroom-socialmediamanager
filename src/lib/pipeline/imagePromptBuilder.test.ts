@@ -29,8 +29,8 @@ const COMPLIANT_PROMPT = `Create a portrait social media post using the full ava
 BACKGROUND: Solid lavender, exact hex #E8E6F5, full bleed, edge to edge.
 HEADLINE: heavy-weight sans-serif, color #111111, ~58pt - do not crop or cut off any part of the headline.
 BARS: solid #6B5BD9.
-EMPTY FOOTER ZONE (bottom 12% of canvas):
-The bottom 12% of the canvas (approximately the bottom 184px) MUST be empty lavender background.
+EMPTY FOOTER ZONE (bottom 18% of canvas):
+The bottom 18% of the canvas (approximately the bottom 276px) MUST be empty lavender background.
 Do NOT render "Data from:" text. Do NOT render any Crustdata logo or wordmark.
 Do NOT use rounded bar ends.`;
 

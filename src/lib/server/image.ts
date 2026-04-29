@@ -9,7 +9,7 @@ export type ImageOutputFormat = 'png' | 'jpeg' | 'webp';
 export type ImageBackground = 'opaque' | 'transparent' | 'auto';
 
 export const PORTRAIT_SAFE_AREA_INSTRUCTION =
-  'Create a portrait social data graphic on a full-bleed lavender #E8E6F5 canvas. Use generous inner margins and keep the full headline and chart visible in the top 88% of the canvas. Leave the bottom 12% empty lavender for the deterministic footer overlay. Do not draw a crop box, safe-area guide, border, frame, or white card.';
+  'Create a portrait social data graphic on a full-bleed lavender #E8E6F5 canvas. Use generous inner margins and keep the full headline and chart visible in the top 82% of the canvas. Leave the bottom 18% empty lavender for the deterministic footer overlay. Do not draw a crop box, safe-area guide, border, frame, or white card.';
 
 const LAVENDER_BACKGROUND = '#E8E6F5';
 const LANDSCAPE_TEMPLATE = 'event_effect_multi_panel_line';

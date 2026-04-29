@@ -18,11 +18,13 @@ import {
   buildScoreCandidatesPrompt,
   isScoredCandidate,
   scoreTotal,
+  type ScoreCandidatesResponse,
   type ScoredCandidate,
 } from '../pipeline/scoreCandidates';
 import {
   buildReframeCandidatesPrompt,
   isReframedCandidate,
+  type ReframeCandidatesResponse,
   type ReframedCandidate,
 } from '../pipeline/reframeCandidates';
 import {
@@ -42,6 +44,7 @@ import {
 import {
   appendRunArtifact,
   getRunDir,
+  listRecentVisualTemplates,
   readMarkdown,
   readRun,
   writeRun,
@@ -69,9 +72,23 @@ type CandidateForValidation = Omit<Partial<CandidateSpec>, 'crustdata_query'> & 
 
 type RuntimeKnowledgeFile = 'base' | 'design';
 type RuntimeKnowledge = Partial<Record<RuntimeKnowledgeFile, string>>;
+type AnthropicTool = NonNullable<AnthropicCallOptions['tools']>[number];
+type DiscoveryCandidatesResponse = {
+  candidates?: unknown[];
+};
+type GeneratedPostToolInput = {
+  data?: GeneratedPostData;
+  caption?: string;
+  hook?: string;
+  key_data_point?: string;
+};
 
 const FEASIBILITY_LOG_FILENAME = 'pipeline.log';
 const MAX_DISCOVERY_CANDIDATES = 10;
+const DISCOVERY_CANDIDATES_TOOL_NAME = 'submit_discovery_candidates';
+const SCORE_CANDIDATES_TOOL_NAME = 'submit_candidate_scores';
+const REFRAME_CANDIDATES_TOOL_NAME = 'submit_reframed_candidates';
+const GENERATED_POST_TOOL_NAME = 'submit_generated_post';
 const ALLOWED_VISUAL_TEMPLATES = new Set([
   'ranked_horizontal_bar',
   'ranked_horizontal_bar_with_icons',
@@ -79,6 +96,13 @@ const ALLOWED_VISUAL_TEMPLATES = new Set([
   'single_line_timeseries',
   'annotated_line_timeseries',
   'event_effect_multi_panel_line',
+  'diverging_horizontal_bar',
+  'multi_line_timeseries',
+  'single_line_timeseries_with_annotations',
+  'stacked_horizontal_bar',
+  'donut_chart',
+  'slope_chart',
+  'scatter_plot',
 ]);
 const STATIC_PROJECT_CONTEXT = `Newsroom is Crustdata's internal pipeline for turning live tech/startup trend signals into API-backed data posts.
 Use the cached knowledge files as the source of truth for editorial fit, topic scope, voice, visual conventions, and pipeline constraints.
@@ -223,6 +247,346 @@ function isPresentParam(name: string, value: unknown) {
 
 function asStringArray(value: unknown) {
   return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
+}
+
+function stage2ScoresSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      api_feasibility: { type: 'number' },
+      recency: { type: 'number' },
+      archetype_fit: { type: 'number' },
+      visual_potential: { type: 'number' },
+      engagement_likelihood: { type: 'number' },
+      total: { type: 'number' },
+    },
+    required: [
+      'api_feasibility',
+      'recency',
+      'archetype_fit',
+      'visual_potential',
+      'engagement_likelihood',
+      'total',
+    ],
+  };
+}
+
+function discoveryCandidatesTool(): AnthropicTool[] {
+  return [
+    {
+      name: DISCOVERY_CANDIDATES_TOOL_NAME,
+      description: 'Submit Crustdata-ready fallback trend candidates when Grok discovery is unavailable.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          candidates: {
+            type: 'array',
+            maxItems: MAX_DISCOVERY_CANDIDATES,
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Stable candidate id such as c_01.' },
+                text: { type: 'string', description: 'Concise trend text.' },
+                source_url: { type: 'string', description: 'Source URL if known, otherwise an empty string.' },
+                engagement: {
+                  type: 'object',
+                  properties: {
+                    likes: { type: 'number' },
+                    reposts: { type: 'number' },
+                    replies: { type: 'number' },
+                  },
+                  required: ['likes', 'reposts', 'replies'],
+                },
+                entities: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Companies, people, or topics mentioned by the candidate.',
+                },
+              },
+              required: ['id', 'text', 'source_url', 'engagement', 'entities'],
+            },
+          },
+        },
+        required: ['candidates'],
+      },
+    },
+  ];
+}
+
+function scoreCandidatesTool(): AnthropicTool[] {
+  return [
+    {
+      name: SCORE_CANDIDATES_TOOL_NAME,
+      description: 'Submit the scored Stage 2 candidate feasibility pass.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          scored_candidates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                candidate_id: { type: 'string' },
+                feasible: { type: 'boolean' },
+                reason: { type: 'string', description: 'Short feasibility reason, 12 words or fewer.' },
+                source: { type: 'string' },
+                source_url: { type: 'string' },
+                scores: stage2ScoresSchema(),
+                matched_archetype: { type: 'string' },
+                matched_angle: { type: 'string' },
+                matched_visual: { type: 'string' },
+              },
+              required: [
+                'candidate_id',
+                'feasible',
+                'reason',
+                'source',
+                'source_url',
+                'scores',
+                'matched_archetype',
+                'matched_angle',
+                'matched_visual',
+              ],
+            },
+          },
+        },
+        required: ['scored_candidates'],
+      },
+    },
+  ];
+}
+
+function reframeCandidatesTool(): AnthropicTool[] {
+  return [
+    {
+      name: REFRAME_CANDIDATES_TOOL_NAME,
+      description: 'Submit fully reframed Crustdata query specs for feasible candidates.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          candidates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                candidate_id: { type: 'string' },
+                feasible: { type: 'boolean' },
+                reason: { type: 'string' },
+                headline: { type: 'string' },
+                subhead: { type: 'string' },
+                source: { type: 'string' },
+                source_url: { type: 'string' },
+                scores: stage2ScoresSchema(),
+                matched_archetype: { type: 'string' },
+                matched_angle: { type: 'string' },
+                matched_visual: { type: 'string' },
+                rationale: { type: 'string' },
+                crustdata_query: {
+                  type: 'object',
+                  properties: {
+                    endpoint: { type: 'string' },
+                    intent: { type: 'string' },
+                    params: {
+                      type: 'object',
+                      additionalProperties: true,
+                    },
+                  },
+                  required: ['endpoint', 'intent', 'params'],
+                },
+                visual_template: {
+                  type: 'string',
+                  enum: Array.from(ALLOWED_VISUAL_TEMPLATES),
+                },
+                expected_data_shape: { type: 'string' },
+              },
+              required: ['candidate_id', 'feasible', 'reason'],
+            },
+          },
+        },
+        required: ['candidates'],
+      },
+    },
+  ];
+}
+
+function generatedPostDataSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Post title shown on the image.' },
+      subtitle: { type: 'string', description: 'Post subtitle shown on the image.' },
+      rows: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string' },
+            value: { type: 'number' },
+            color: { type: 'string', description: 'Hex color such as #6B5BD9.' },
+          },
+          required: ['label', 'value'],
+        },
+      },
+      footer: { type: 'string', description: 'Data attribution, usually Data from: Crustdata.' },
+      source_metadata: {
+        type: 'object',
+        additionalProperties: true,
+      },
+    },
+    required: ['title', 'subtitle', 'rows', 'footer'],
+  };
+}
+
+function generatedPostTool(description: string): AnthropicTool[] {
+  return [
+    {
+      name: GENERATED_POST_TOOL_NAME,
+      description,
+      input_schema: {
+        type: 'object',
+        properties: {
+          data: generatedPostDataSchema(),
+          caption: {
+            type: 'string',
+            description:
+              "The caption text. 2-3 sentences. Matches Crustdata's voice: confident, data-driven, mildly contrarian.",
+          },
+          hook: {
+            type: 'string',
+            description: 'A short opening line, one sentence, that draws the reader in.',
+          },
+          key_data_point: {
+            type: 'string',
+            description: 'The single most striking data point from the chart, expressed in one short sentence.',
+          },
+        },
+        required: ['data', 'caption', 'hook', 'key_data_point'],
+      },
+    },
+  ];
+}
+
+function safeStageName(stage: string) {
+  return stage.replace(/[^a-z0-9_-]/gi, '_');
+}
+
+async function writeAnthropicToolFailure(
+  stage: string,
+  runId: string,
+  response: AnthropicResponse,
+  reason: string
+) {
+  try {
+    const dir = path.join(getRunDir(runId), 'debug');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, `${safeStageName(stage)}_failure.json`),
+      JSON.stringify(
+        {
+          stage,
+          timestamp: now(),
+          failure_reason: reason,
+          stop_reason: response.stop_reason,
+          usage: response.usage,
+          response,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch (error) {
+    console.error(
+      `[tool-diagnostics] failed to write debug bundle for run=${runId} stage=${stage}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+
+async function throwAnthropicToolFailure(
+  stage: string,
+  runId: string,
+  response: AnthropicResponse,
+  reason: string
+): Promise<never> {
+  await writeAnthropicToolFailure(stage, runId, response, reason);
+  throw new Error(reason);
+}
+
+async function getRequiredToolInput<T>(
+  stage: string,
+  runId: string,
+  response: AnthropicResponse,
+  toolName: string
+): Promise<T> {
+  const toolUse = response.content?.find((part) => part.type === 'tool_use' && part.name === toolName);
+  const input = toolUse?.input;
+
+  if (!isRecord(input)) {
+    return throwAnthropicToolFailure(stage, runId, response, `${stage}: expected ${toolName} tool_use block.`);
+  }
+
+  return input as T;
+}
+
+function isGeneratedPostData(value: unknown): value is GeneratedPostData {
+  if (!isRecord(value)) return false;
+  if (typeof value.title !== 'string' || !value.title.trim()) return false;
+  if (typeof value.subtitle !== 'string') return false;
+  if (typeof value.footer !== 'string' || !value.footer.trim()) return false;
+  if (!Array.isArray(value.rows) || value.rows.length === 0) return false;
+
+  return value.rows.every(
+    (row) =>
+      isRecord(row) &&
+      typeof row.label === 'string' &&
+      row.label.trim().length > 0 &&
+      typeof row.value === 'number' &&
+      Number.isFinite(row.value)
+  );
+}
+
+async function getGeneratedPostToolInput(
+  stage: string,
+  runId: string,
+  response: AnthropicResponse
+): Promise<{ data: GeneratedPostData; caption: string; hook: string; key_data_point: string }> {
+  const input = await getRequiredToolInput<GeneratedPostToolInput>(
+    stage,
+    runId,
+    response,
+    GENERATED_POST_TOOL_NAME
+  );
+  const caption = typeof input.caption === 'string' ? input.caption.trim() : '';
+  const hook = typeof input.hook === 'string' ? input.hook.trim() : '';
+  const keyDataPoint = typeof input.key_data_point === 'string' ? input.key_data_point.trim() : '';
+
+  if (!isGeneratedPostData(input.data)) {
+    return throwAnthropicToolFailure(
+      stage,
+      runId,
+      response,
+      `${stage}: ${GENERATED_POST_TOOL_NAME}.data did not include valid chart-ready rows.`
+    );
+  }
+
+  if (!caption) {
+    return throwAnthropicToolFailure(
+      stage,
+      runId,
+      response,
+      `${stage}: ${GENERATED_POST_TOOL_NAME}.caption was empty.`
+    );
+  }
+
+  return {
+    data: input.data,
+    caption,
+    hook,
+    key_data_point: keyDataPoint,
+  };
 }
 
 function isKnownFieldPath(field: string, fields?: readonly string[], groups?: readonly string[]) {
@@ -1083,9 +1447,8 @@ Return JSON with this exact shape:
 }`;
 
     run = await appendLog(run, 'Querying Grok for candidate trends.');
-    let grokResponse: string;
-    let candidateResponse: AnthropicResponse | undefined;
-    let candidateParseStage = 'stage_1_grok_candidates';
+    let grokResponse = '';
+    let rawCandidates: DiscoveryCandidatesResponse | undefined;
     let discoverySource = 'Grok';
     try {
       grokResponse = await callGrok(grokCandidatePrompt);
@@ -1093,7 +1456,6 @@ Return JSON with this exact shape:
       const message = error instanceof Error ? error.message : String(error);
       run = await appendLog(run, `Grok discovery failed (${message}). Falling back to Claude candidate generation.`);
       discoverySource = 'Claude fallback';
-      candidateParseStage = 'stage_1_discovery_fallback';
       const fallbackResponse = await callLoggedAnthropicFull(
         'stage_1_discovery_fallback',
         runId,
@@ -1110,37 +1472,32 @@ Use only these endpoint-backed shapes:
 - /person/search founder, alumni, employer, title, role, skills, education, and location patterns.
 
 Do not include ideas requiring sentiment, comments, /web/search/live, professional-network live endpoints, or unknown APIs.
-
-Return JSON with this exact shape:
-{
-  "candidates": [
-    {
-      "id": "c_01",
-      "text": "trend text",
-      "source_url": "",
-      "engagement": { "likes": 0, "reposts": 0, "replies": 0 },
-      "entities": ["company or topic"]
-    }
-  ]
-}`,
+Submit the candidates through the submit_discovery_candidates tool.`,
         {
           system: cachedRuntimeSystem(
             baseKnowledge,
             ['base'],
             'You are Stage 1 fallback for Newsroom: produce conservative Crustdata API-ready candidate ideas when Grok is unavailable.'
           ),
+          tools: discoveryCandidatesTool(),
+          toolChoice: { type: 'tool', name: DISCOVERY_CANDIDATES_TOOL_NAME },
         }
       );
-      grokResponse = fallbackResponse.text;
-      candidateResponse = fallbackResponse.response;
+      rawCandidates = await getRequiredToolInput<DiscoveryCandidatesResponse>(
+        'stage_1_discovery_fallback',
+        runId,
+        fallbackResponse.response,
+        DISCOVERY_CANDIDATES_TOOL_NAME
+      );
     }
 
-    const rawCandidates = await extractJsonObjectWithDiagnostics<{ candidates?: unknown[] }>(
-      candidateParseStage,
-      runId,
-      grokResponse,
-      candidateResponse
-    );
+    if (!rawCandidates) {
+      rawCandidates = await extractJsonObjectWithDiagnostics<DiscoveryCandidatesResponse>(
+        'stage_1_grok_candidates',
+        runId,
+        grokResponse
+      );
+    }
     const rawCandidateList = Array.isArray(rawCandidates.candidates)
       ? rawCandidates.candidates.slice(0, MAX_DISCOVERY_CANDIDATES)
       : [];
@@ -1159,17 +1516,19 @@ Return JSON with this exact shape:
         system: cachedRuntimeSystem(
           baseKnowledge,
           ['base'],
-          'You are Stage 2 pass 1 of Newsroom: score all trend candidates and decide initial Crustdata feasibility. Return compact valid JSON only.'
+          'You are Stage 2 pass 1 of Newsroom: score all trend candidates and decide initial Crustdata feasibility.'
         ),
         maxTokens: 4096,
+        tools: scoreCandidatesTool(),
+        toolChoice: { type: 'tool', name: SCORE_CANDIDATES_TOOL_NAME },
       }
     );
 
-    const scored = await extractJsonObjectWithDiagnostics<{ scored_candidates?: unknown[] }>(
+    const scored = await getRequiredToolInput<ScoreCandidatesResponse>(
       'stage_2_score',
       runId,
-      scoredResponse.text,
-      scoredResponse.response
+      scoredResponse.response,
+      SCORE_CANDIDATES_TOOL_NAME
     );
     const scoredCandidates = (Array.isArray(scored.scored_candidates) ? scored.scored_candidates : []).filter(
       isScoredCandidate
@@ -1194,11 +1553,20 @@ Return JSON with this exact shape:
       ...baseKnowledge,
       ...(await readRuntimeKnowledge(['design'])),
     };
+    const recentVisualTemplates = await listRecentVisualTemplates(10);
+    if (recentVisualTemplates.length) {
+      run = await appendLog(
+        run,
+        `Recent visual_template usage (newest first): ${recentVisualTemplates.join(', ')}.`
+      );
+    }
     run = await appendLog(run, `Reframing top ${topScoredCandidates.length} feasible candidate(s).`);
     const reframeResponse = await callLoggedAnthropicFull(
       'stage_2_reframe',
       runId,
-      buildReframeCandidatesPrompt(topScoredCandidates, formatEndpointCapabilitiesForPrompt()),
+      buildReframeCandidatesPrompt(topScoredCandidates, formatEndpointCapabilitiesForPrompt(), {
+        recentVisualTemplates,
+      }),
       {
         system: cachedRuntimeSystem(
           reframeKnowledge,
@@ -1206,14 +1574,16 @@ Return JSON with this exact shape:
           `You are Stage 2 pass 2 of Newsroom: fully reframe only the supplied feasible candidates into deterministic Crustdata query specs. Only use these currently usable endpoints:\n${formatUsableEndpoints()}`
         ),
         maxTokens: 4096,
+        tools: reframeCandidatesTool(),
+        toolChoice: { type: 'tool', name: REFRAME_CANDIDATES_TOOL_NAME },
       }
     );
 
-    const reframed = await extractJsonObjectWithDiagnostics<{ candidates?: unknown[] }>(
+    const reframed = await getRequiredToolInput<ReframeCandidatesResponse>(
       'stage_2_reframe',
       runId,
-      reframeResponse.text,
-      reframeResponse.response
+      reframeResponse.response,
+      REFRAME_CANDIDATES_TOOL_NAME
     );
     const reframedCandidates = (Array.isArray(reframed.candidates) ? reframed.candidates : []).filter(
       isReframedCandidate
@@ -1333,33 +1703,32 @@ ${JSON.stringify(selectedCandidate, null, 2)}
 Raw Crustdata response:
 ${JSON.stringify(rawData, null, 2)}
 
-Return JSON:
-{
-  "data": {
-    "title": "post title",
-    "subtitle": "post subtitle",
-    "rows": [{ "label": "label", "value": 0, "color": "#111111" }],
-    "footer": "Data from: Crustdata",
-    "source_metadata": { "endpoint": "endpoint hit", "fetched_at": "ISO timestamp" }
-  },
-  "caption": "2-3 sentence caption"
-}`, {
+Normalize the raw response into chart-ready post data and write the social caption.
+
+Requirements:
+- Use only data that is present in the raw Crustdata response.
+- If the original candidate cannot be supported exactly, adjust the title, subtitle, rows, and caption to what the returned data actually supports.
+- For ranked comparisons, sort rows descending by value.
+- Keep rows compact and numeric so the selected visual template can render them directly.
+- Use "Data from: Crustdata" as the footer unless the runtime knowledge requires a more specific Crustdata attribution.
+- Write a 2-3 sentence caption in Crustdata's voice with a clear hook and the key data takeaway.
+- Submit the result through the submit_generated_post tool.`, {
       system: cachedRuntimeSystem(
         baseKnowledge,
         ['base'],
         'You are Stage 5 of Newsroom: normalize Crustdata API output into chart-ready post data and a caption.'
       ),
+      maxTokens: 2048,
+      temperature: 0.1,
+      tools: generatedPostTool('Submit chart-ready post data and the caption for the selected Crustdata candidate.'),
+      toolChoice: { type: 'tool', name: GENERATED_POST_TOOL_NAME },
     });
 
-    const shaped = await extractJsonObjectWithDiagnostics<{ data: GeneratedPostData; caption: string }>(
+    const shaped = await getGeneratedPostToolInput(
       'stage_5_caption',
       runId,
-      shapedResponse.text,
       shapedResponse.response
     );
-    if (!shaped.data?.rows?.length) {
-      throw new Error('Finalized data did not include chart rows.');
-    }
 
     await writeRunArtifact(runId, 'data.json', JSON.stringify(shaped.data, null, 2));
     run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
@@ -1405,28 +1774,28 @@ ${JSON.stringify(run.data, null, 2)}
 User edit prompt:
 ${editPrompt}
 
-Return JSON:
-{
-  "data": {
-    "title": "post title",
-    "subtitle": "post subtitle",
-    "rows": [{ "label": "label", "value": 0, "color": "#111111" }],
-    "footer": "Data from: Crustdata",
-    "source_metadata": {}
-  },
-  "caption": "2-3 sentence caption"
-}`, {
+Revise the chart-ready post data and caption according to the user edit.
+
+Requirements:
+- Preserve the existing source_metadata unless the edit requires a correction.
+- Keep rows compact, numeric, and directly renderable by the selected visual template.
+- For ranked comparisons, sort rows descending by value.
+- Write a 2-3 sentence caption in Crustdata's voice with a clear hook and the key data takeaway.
+- Submit the result through the submit_generated_post tool.`, {
       system: cachedRuntimeSystem(
         baseKnowledge,
         ['base'],
         "You are Stage 5 of Newsroom: revise existing chart-ready post data using the user's edit prompt."
       ),
+      maxTokens: 2048,
+      temperature: 0.1,
+      tools: generatedPostTool('Submit revised chart-ready post data and caption for an edited Newsroom post.'),
+      toolChoice: { type: 'tool', name: GENERATED_POST_TOOL_NAME },
     });
 
-    const revised = await extractJsonObjectWithDiagnostics<{ data: GeneratedPostData; caption: string }>(
+    const revised = await getGeneratedPostToolInput(
       'stage_5_regenerate',
       runId,
-      revisedResponse.text,
       revisedResponse.response
     );
     const imageArtifact = await createPostImageArtifact(

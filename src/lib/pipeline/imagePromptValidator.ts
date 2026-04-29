@@ -28,7 +28,7 @@ const HEX_COLOR_REGEX = /#[0-9A-Fa-f]{6}/g;
 const FULL_BLEED_RE = /full[-\s]bleed/i;
 const DO_NOT_CROP_RE = /(do not crop|must not be cropped|not cropped)/i;
 const PORTRAIT_RE = /\bportrait\b/i;
-const FOOTER_ZONE_HEIGHT_RE = /(bottom 12%|bottom 184px)/;
+const FOOTER_ZONE_HEIGHT_RE = /(bottom 18%|bottom 276px)/;
 const DATA_FROM_RE = /Data from:/;
 const FOOTER_LOGO_RE = /\b(hexagon|cube logo|Crustdata logo)\b/i;
 
@@ -105,7 +105,7 @@ export function validateImagePrompt(prompt: string): ValidationResult {
   }
 
   if (!FOOTER_ZONE_HEIGHT_RE.test(prompt)) {
-    missing.push('bottom 12% or bottom 184px footer-zone instruction');
+    missing.push('bottom 18% or bottom 276px footer-zone instruction');
   }
 
   if (!DO_NOT_CROP_RE.test(prompt)) {

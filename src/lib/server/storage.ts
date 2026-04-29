@@ -131,7 +131,7 @@ export async function writeRun(run: RunState) {
   return nextRun;
 }
 
-export async function listRuns(): Promise<RunSummary[]> {
+async function listAllRunsSorted(): Promise<RunState[]> {
   await ensureDir(RUNS_DIR);
   const entries = await fs.readdir(RUNS_DIR, { withFileTypes: true });
   const runs = await Promise.all(
@@ -142,8 +142,14 @@ export async function listRuns(): Promise<RunSummary[]> {
 
   return runs
     .filter((run): run is RunState => Boolean(run))
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+}
+
+export async function listRuns(): Promise<RunSummary[]> {
+  const sorted = await listAllRunsSorted();
+
+  return sorted
     .filter((run) => run.status === 'ready' || run.status === 'saved')
-    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
     .map((run) => ({
       run_id: run.run_id,
       headline: run.selected_candidate?.headline ?? run.data?.title ?? 'Untitled run',
@@ -155,6 +161,27 @@ export async function listRuns(): Promise<RunSummary[]> {
       status: run.status,
       image_url: run.image_path ? `/api/runs/${run.run_id}/image` : undefined,
     }));
+}
+
+/**
+ * Most-recent-first list of `visual_template` values from completed runs (status `ready` or `saved`).
+ * Used by Stage 2 reframer to actively diversify chart-type selection across runs so the dashboard
+ * does not fill up with seven horizontal bar charts in a row.
+ */
+export async function listRecentVisualTemplates(limit = 10): Promise<string[]> {
+  if (limit <= 0) return [];
+  const sorted = await listAllRunsSorted();
+
+  const templates: string[] = [];
+  for (const run of sorted) {
+    if (run.status !== 'ready' && run.status !== 'saved') continue;
+    const template = run.selected_candidate?.visual_template?.trim();
+    if (!template) continue;
+    templates.push(template);
+    if (templates.length >= limit) break;
+  }
+
+  return templates;
 }
 
 export async function deleteRun(runId: string) {
