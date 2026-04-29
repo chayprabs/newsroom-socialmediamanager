@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { CandidateSpec, GeneratedPostData, GenerationStep, RunState } from '../types';
 import {
   type AnthropicTextBlock,
+  type AnthropicResponse,
   callAnthropicWithResponse,
   callCrustdata,
   callGrok,
@@ -9,7 +10,7 @@ import {
   isOpenAiImageConfigured,
 } from './clients';
 import { logSonnetUsage } from '../pipeline/tokenLogger';
-import { extractJsonObject } from './json';
+import { extractJsonObjectWithDiagnostics } from '../pipeline/jsonDiagnostics';
 import { buildPostImagePrompt, normalizeGeneratedPostImage, renderPostSvg } from './image';
 import {
   formatEndpointCapabilitiesForPrompt,
@@ -818,6 +819,17 @@ async function callLoggedAnthropic(
   return text;
 }
 
+async function callLoggedAnthropicFull(
+  stage: string,
+  runId: string,
+  prompt: string,
+  options?: { system?: AnthropicTextBlock[] }
+) {
+  const { text, response } = await callAnthropicWithResponse(prompt, options);
+  logSonnetUsage(stage, runId, response);
+  return { text, response };
+}
+
 function requireRun(run: RunState | null): RunState {
   if (!run) {
     throw new Error('Run not found.');
@@ -903,6 +915,8 @@ Return JSON with this exact shape:
 
     run = await appendLog(run, 'Querying Grok for candidate trends.');
     let grokResponse: string;
+    let candidateResponse: AnthropicResponse | undefined;
+    let candidateParseStage = 'stage_1_grok_candidates';
     let discoverySource = 'Grok';
     try {
       grokResponse = await callGrok(grokCandidatePrompt);
@@ -910,7 +924,8 @@ Return JSON with this exact shape:
       const message = error instanceof Error ? error.message : String(error);
       run = await appendLog(run, `Grok discovery failed (${message}). Falling back to Claude candidate generation.`);
       discoverySource = 'Claude fallback';
-      grokResponse = await callLoggedAnthropic(
+      candidateParseStage = 'stage_1_discovery_fallback';
+      const fallbackResponse = await callLoggedAnthropicFull(
         'stage_1_discovery_fallback',
         runId,
         `Grok could not return candidates, so generate ${MAX_DISCOVERY_CANDIDATES} Crustdata-ready fallback candidates yourself.
@@ -947,9 +962,16 @@ Return JSON with this exact shape:
           ),
         }
       );
+      grokResponse = fallbackResponse.text;
+      candidateResponse = fallbackResponse.response;
     }
 
-    const rawCandidates = extractJsonObject<{ candidates?: unknown[] }>(grokResponse);
+    const rawCandidates = await extractJsonObjectWithDiagnostics<{ candidates?: unknown[] }>(
+      candidateParseStage,
+      runId,
+      grokResponse,
+      candidateResponse
+    );
     const rawCandidateList = Array.isArray(rawCandidates.candidates)
       ? rawCandidates.candidates.slice(0, MAX_DISCOVERY_CANDIDATES)
       : [];
@@ -959,7 +981,7 @@ Return JSON with this exact shape:
       return noMatches(run, 'No current trends matched the editorial base. Try finding new ideas again.');
     }
 
-    const scoredResponse = await callLoggedAnthropic('stage_2_judge', runId, `Candidate trends:
+    const scoredResponse = await callLoggedAnthropicFull('stage_2_judge', runId, `Candidate trends:
 ${JSON.stringify({ candidates: rawCandidateList }, null, 2)}
 
 Endpoint capability registry:
@@ -989,7 +1011,12 @@ Return JSON:
       ),
     });
 
-    const scored = extractJsonObject<{ scored_candidates?: ScoredCandidate[] }>(scoredResponse);
+    const scored = await extractJsonObjectWithDiagnostics<{ scored_candidates?: ScoredCandidate[] }>(
+      'stage_2_judge',
+      runId,
+      scoredResponse.text,
+      scoredResponse.response
+    );
     const scoredCandidates = (Array.isArray(scored.scored_candidates) ? scored.scored_candidates : []).filter(
       (candidate): candidate is ScoredCandidate => typeof candidate?.candidate_id === 'string'
     );
@@ -1004,7 +1031,7 @@ Return JSON:
       ...baseKnowledge,
       ...(await readRuntimeKnowledge(['design'])),
     };
-    const reframeResponse = await callLoggedAnthropic('stage_2_reframer', runId, `Candidate trends:
+    const reframeResponse = await callLoggedAnthropicFull('stage_2_reframer', runId, `Candidate trends:
 ${JSON.stringify({ candidates: rawCandidateList }, null, 2)}
 
 Scored candidates:
@@ -1048,8 +1075,14 @@ Return one item for each scored candidate as JSON:
       ),
     });
 
-    const reframed = extractJsonObject<{ candidates?: CandidateForValidation[]; top_3?: CandidateForValidation[] }>(
-      reframeResponse
+    const reframed = await extractJsonObjectWithDiagnostics<{
+      candidates?: CandidateForValidation[];
+      top_3?: CandidateForValidation[];
+    }>(
+      'stage_2_reframer',
+      runId,
+      reframeResponse.text,
+      reframeResponse.response
     );
     const reframedCandidates = Array.isArray(reframed.candidates)
       ? reframed.candidates
@@ -1165,7 +1198,7 @@ export async function generatePost(runId: string) {
     run = await writeRun(updateStep(run, 'finalizing_data', 'running', 'Asking Claude to normalize chart data.'));
 
     const baseKnowledge = await readRuntimeKnowledge(['base']);
-    const shapedResponse = await callLoggedAnthropic('stage_5_caption', runId, `Selected candidate:
+    const shapedResponse = await callLoggedAnthropicFull('stage_5_caption', runId, `Selected candidate:
 ${JSON.stringify(selectedCandidate, null, 2)}
 
 Raw Crustdata response:
@@ -1189,7 +1222,12 @@ Return JSON:
       ),
     });
 
-    const shaped = extractJsonObject<{ data: GeneratedPostData; caption: string }>(shapedResponse);
+    const shaped = await extractJsonObjectWithDiagnostics<{ data: GeneratedPostData; caption: string }>(
+      'stage_5_caption',
+      runId,
+      shapedResponse.text,
+      shapedResponse.response
+    );
     if (!shaped.data?.rows?.length) {
       throw new Error('Finalized data did not include chart rows.');
     }
@@ -1239,7 +1277,7 @@ export async function regeneratePost(runId: string, editPrompt: string) {
 
     run = await appendLog(run, 'Regenerating post with edit prompt.');
     const baseKnowledge = await readRuntimeKnowledge(['base']);
-    const revisedResponse = await callLoggedAnthropic('stage_5_regenerate', runId, `Current data:
+    const revisedResponse = await callLoggedAnthropicFull('stage_5_regenerate', runId, `Current data:
 ${JSON.stringify(run.data, null, 2)}
 
 User edit prompt:
@@ -1263,7 +1301,12 @@ Return JSON:
       ),
     });
 
-    const revised = extractJsonObject<{ data: GeneratedPostData; caption: string }>(revisedResponse);
+    const revised = await extractJsonObjectWithDiagnostics<{ data: GeneratedPostData; caption: string }>(
+      'stage_5_regenerate',
+      runId,
+      revisedResponse.text,
+      revisedResponse.response
+    );
     const imageKnowledge = {
       ...baseKnowledge,
       ...(await readRuntimeKnowledge(['design'])),

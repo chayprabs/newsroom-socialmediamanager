@@ -6,6 +6,7 @@ import { Check, Loader2 } from 'lucide-react';
 import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
+import { DebugBundle } from './DebugBundle';
 
 export function GeneratingProgress() {
   const router = useRouter();
@@ -120,9 +121,10 @@ export function GeneratingProgress() {
                   </div>
                 ))}
                 {visibleError ? (
-                  <p style={{ fontSize: '12px', color: '#B42318', lineHeight: '1.5', marginTop: '14px' }}>
+                  <div style={{ fontSize: '12px', color: '#B42318', lineHeight: '1.5', marginTop: '14px' }}>
                     {visibleError}
-                  </p>
+                    <DebugBundle runId={runId} visible={run?.status === 'failed'} />
+                  </div>
                 ) : null}
               </div>
             ) : (

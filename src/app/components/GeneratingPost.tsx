@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { TopNav } from './TopNav';
 import { useRunState } from './useRunState';
+import { DebugBundle } from './DebugBundle';
 
 export function GeneratingPost() {
   const router = useRouter();
@@ -139,6 +140,7 @@ export function GeneratingPost() {
               {visibleError ? (
                 <div style={{ fontSize: '12px', color: '#B42318', lineHeight: '1.5' }}>
                   {visibleError}
+                  <DebugBundle runId={runId} visible={hasFailure} />
                 </div>
               ) : null}
             </div>

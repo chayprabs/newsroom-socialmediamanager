@@ -24,6 +24,7 @@ export interface AnthropicResponse {
   type?: string;
   role?: string;
   model?: string;
+  stop_reason?: string;
   content?: Array<{
     type: string;
     text?: string;
