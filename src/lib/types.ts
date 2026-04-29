@@ -50,14 +50,65 @@ export interface GenerationStep {
   microStatus?: string;
 }
 
+export interface ChartDatum {
+  label?: string;
+  entity?: string;
+  date?: string;
+  value: number;
+  color?: string;
+  brand_color_hex?: string;
+  count?: number;
+  total?: number;
+  percent?: number;
+  x?: number;
+  y?: number;
+}
+
+export interface ChartAnnotation {
+  date: string;
+  label: string;
+  sublabel?: string;
+  value?: number;
+}
+
+export interface ChartEntitySeries {
+  entity: string;
+  color?: string;
+  brand_color_hex?: string;
+  points?: ChartDatum[];
+  start_value?: number;
+  end_value?: number;
+  x?: number;
+  y?: number;
+}
+
+export interface ChartSegment {
+  label: string;
+  value: number;
+  color?: string;
+  count?: number;
+  percent?: number;
+  icon?: string;
+  flag_or_logo?: string;
+}
+
 export interface GeneratedPostData {
   title: string;
   subtitle: string;
-  rows: Array<{
-    label: string;
-    value: number;
-    color?: string;
-  }>;
+  rows?: ChartDatum[];
+  points?: ChartDatum[];
+  entities?: ChartEntitySeries[];
+  segments?: ChartSegment[];
+  annotations?: ChartAnnotation[];
+  unit_label?: string;
+  y_axis_title?: string;
+  x_axis_label?: string;
+  y_axis_label?: string;
+  start_time_label?: string;
+  end_time_label?: string;
+  total_annotation?: string;
+  donut_hole_total?: number | string;
+  donut_hole_label?: string;
   footer: string;
   source_metadata?: Record<string, unknown>;
 }
@@ -86,6 +137,17 @@ export interface RunErrorDetails {
   status_code?: number;
 }
 
+export interface TemplateDiversityCheck {
+  /** How many distinct `visual_template` values appear across the top-3 surfaced candidates. */
+  distinct_templates_in_top_3: number;
+  /** Recent-run templates that the reframer reports it actively avoided. */
+  recent_templates_avoided?: string[];
+  /** Sonnet's plain-English explanation of how this top-3 set provides visual variety. */
+  diversity_rationale: string;
+  /** Soft-fail warning copy shown in the UI when fewer than 2 distinct templates appear. */
+  warning?: string;
+}
+
 export interface RunState {
   run_id: string;
   created_at: string;
@@ -104,6 +166,14 @@ export interface RunState {
   image_model?: string;
   usage_summary?: UsageSummary;
   saved_at?: string;
+  /**
+   * Top-level snapshot of the visual template the run actually rendered.
+   * Stamped by `recordTemplateUsed` when the run is saved so that
+   * `getRecentTemplates` does not have to dig into `selected_candidate`.
+   */
+  visual_template?: string;
+  /** Stage 2 reframer's diversity self-check for the candidate set. */
+  template_diversity?: TemplateDiversityCheck;
   error?: string;
   error_details?: RunErrorDetails;
 }

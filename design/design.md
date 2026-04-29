@@ -21,8 +21,91 @@ important_note: "v2 of this spec is prescriptive: GPT-image-2 needs literal spec
 ```
 
 > **Runtime note:** This file is loaded into context only for the Stage 2 reframer step that selects visual templates and the Stage 4a GPT-image-2 image prompt builder. Anthropic prompt caching is enabled when this prefix is used. The prompt builder reads `OPENAI_IMAGE_SIZE` and `OPENAI_IMAGE_EXPORT_SIZE` from `.env.local` at module load and substitutes the `{{...}}` placeholders below before passing the file to Sonnet. `OPENAI_IMAGE_SAFE_AREA` remains in env snapshots for backwards-compatible diagnostics only; it is no longer a crop target and must not be written into image prompts as a centered safe area.
+>
+> **Worked-example coverage:** This file ships **10 canonical worked-example skeletons** (sections 8.1–8.11) — `ranked_horizontal_bar`, `single_line_timeseries`, `vertical_bar_comparison`, `diverging_horizontal_bar`, `multi_line_timeseries`, `single_line_timeseries_with_annotations`, `stacked_horizontal_bar`, `donut_chart`, `slope_chart`, and `scatter_plot` — plus the `annotated_line_timeseries` variant (8.4) that inherits from `single_line_timeseries`, the `ranked_horizontal_bar_with_icons` variant (7.2), and the special-case landscape `event_effect_multi_panel_line` (7.6). Section 0 below ("Template selection priority") is the authoritative quick-reference Sonnet should scan first when picking a template — it pairs each template with its `use_when` rule.
+>
+> **Diversity requirement (Stage 2 reframer):** The reframer is REQUIRED to diversify `visual_template` selection both across the surfaced top 3 candidates AND across recent saved runs. The Stage 2 system prompt enforces "the top 3 must collectively represent at least 2 distinct `visual_template` values" and the reframer is given the last 5 saved-run templates so it can actively avoid them. See `STAGE_2_DIVERSITY_RULE` in `src/lib/pipeline/reframeCandidates.ts` for the verbatim system-prompt block. Repetitive visual templates across runs is the #1 quality issue users complain about — prioritize variety aggressively when there is any reasonable mapping.
 
 > **Footer rendering note:** As of this version, the "Data from: Crustdata" footer is rendered by a deterministic post-processing step (Stage 4c), not by GPT-image-2. Worked-example skeletons in this file instruct the image model to leave the bottom 18% of the canvas as empty lavender space. The footer is composited from `public/assets/brand/crustdata-footer.png` after generation. To change the footer's appearance, replace that asset file — no prompt or code change required.
+
+---
+
+## 0. Template selection priority
+
+Authoritative quick-reference. When Stage 2 picks a `visual_template`, scan this section FIRST, then drop to sections 7–8 for the full spec and the worked-example skeleton. The `use_when` lines below mirror the `use_when` rules embedded in each template's catalog entry — if you change one, change both.
+
+```yaml
+template_selection_priority:
+  rule: "Match the data SHAPE to the template that fits it. Do NOT default to ranked_horizontal_bar because it feels familiar."
+  diversity_constraint: "Across the surfaced top 3 candidates, at least 2 distinct visual_template values are required. At most ONE candidate may use ranked_horizontal_bar."
+
+  # ────────────── Canonical 10 worked-example skeletons ──────────────
+
+  - id: ranked_horizontal_bar
+    section: "7.1 / 8.1"
+    use_when: "Ranked categories of the SAME type with all-positive values (top-N destinations, hires, role counts)."
+
+  - id: single_line_timeseries
+    section: "7.4 / 8.2"
+    use_when: "ONE entity, ONE metric, over time. No notable inflection events."
+
+  - id: vertical_bar_comparison
+    section: "7.3 / 8.3"
+    use_when: "3-5 distinct competitors compared on ONE metric. Few categories, snapshot."
+
+  - id: diverging_horizontal_bar
+    section: "7.7 / 8.5"
+    use_when: "Changes (% growth/decline, YoY deltas, gains/losses) where values are SIGNED — both positive and negative. Has a meaningful zero baseline."
+
+  - id: multi_line_timeseries
+    section: "7.8 / 8.6"
+    use_when: "3-5 distinct named entities tracked over time on the SAME metric. Show relative trends and crossovers."
+
+  - id: single_line_timeseries_with_annotations
+    section: "7.9 / 8.7"
+    use_when: "ONE entity over time with NARRATIVE event pills (launches, fundraises, pivots). Softer / storytelling chart."
+
+  - id: stacked_horizontal_bar
+    section: "7.10 / 8.8"
+    use_when: "COMPOSITION of a single whole — shares of one entity (where employees came from, revenue mix). Sums to 100%."
+
+  - id: donut_chart
+    section: "7.11 / 8.9"
+    use_when: "Geographic or categorical distribution where the WHOLE matters and the total count is the focal point. 3-8 segments."
+
+  - id: slope_chart
+    section: "7.12 / 8.10"
+    use_when: "BEFORE-and-AFTER comparison on ONE metric across several entities, between EXACTLY two time points. Rank changes are the story."
+
+  - id: scatter_plot
+    section: "7.13 / 8.11"
+    use_when: "Relationship between TWO metrics across multiple entities (e.g., headcount vs revenue/employee). Each entity is one point."
+
+  # ────────────── Variants and special cases ──────────────
+
+  - id: annotated_line_timeseries
+    section: "7.5 / 8.4"
+    inherits: "single_line_timeseries"
+    use_when: "ONE entity over time WITH 2-5 sharp data callouts (data-flavored boxes — not narrative pills). Use single_line_timeseries_with_annotations instead when the callouts are storytelling."
+
+  - id: ranked_horizontal_bar_with_icons
+    section: "7.2"
+    inherits: "ranked_horizontal_bar"
+    use_when: "Same as ranked_horizontal_bar but each row is a recognizable named brand and an icon adds value."
+
+  - id: event_effect_multi_panel_line
+    section: "7.6"
+    status: "special_case_landscape_only"
+    auto_select: false
+    use_when: "Do NOT auto-select. Only when the candidate explicitly requires pre/post comparison across 3+ entities sharing the same event type — landscape format."
+
+hard_disambiguation_rules:
+  - "Values can be negative -> diverging_horizontal_bar, NOT ranked_horizontal_bar."
+  - "Two time points exactly -> slope_chart, NOT multi_line_timeseries."
+  - "One whole split into shares -> stacked_horizontal_bar or donut_chart, NOT ranked_horizontal_bar."
+  - "Two metrics on the same entities -> scatter_plot."
+  - "Many entities over time (3-5) -> multi_line_timeseries instead of stacking single_line_timeseries posts."
+```
 
 ---
 

@@ -1,4 +1,4 @@
-import type { CandidateSpec } from '../types';
+import type { CandidateSpec, TemplateDiversityCheck } from '../types';
 import type { ScoredCandidate } from './scoreCandidates';
 
 export type ReframedCandidate = ScoredCandidate & {
@@ -16,6 +16,7 @@ export type ReframedCandidate = ScoredCandidate & {
 
 export type ReframeCandidatesResponse = {
   candidates?: ReframedCandidate[];
+  template_diversity_check?: TemplateDiversityCheck;
 };
 
 /**
@@ -43,6 +44,37 @@ export const VISUAL_TEMPLATE_IDS = [
 ] as const;
 
 export type VisualTemplateId = (typeof VISUAL_TEMPLATE_IDS)[number];
+
+/**
+ * Verbatim diversity rule for the Stage 2 reframer SYSTEM prompt. It sits immediately
+ * after the cached design.md block so the model reads `use_when` rules first, then the
+ * explicit "top-3 must be diverse" mandate.
+ *
+ * Repetitive visual templates across runs is the #1 quality issue users complain about,
+ * so this is intentionally aggressive.
+ */
+export const STAGE_2_DIVERSITY_RULE = `Diversity rule for visual_template selection:
+When you produce the top 3 reframed candidates, the three candidates MUST collectively represent at least 2 distinct visual_template values. Surfacing 3 candidates that all map to the same visual_template (e.g., all three using ranked_horizontal_bar) is forbidden — even if all three trends are technically ranking-shaped.
+
+If the candidate pool contains only ranking-shaped trends, you must:
+- Include at most ONE candidate using ranked_horizontal_bar.
+- For the other two slots, find candidates whose data CAN be reframed to a different chart type. Examples:
+  - A "ranking by growth %" trend → diverging_horizontal_bar (showing the % changes, not absolute counts)
+  - A "current snapshot" trend across a few entities → vertical_bar_comparison instead of ranked_horizontal_bar
+  - A "what makes up X" trend → stacked_horizontal_bar
+  - A "how X changed over time" trend → single_line_timeseries_with_annotations or multi_line_timeseries
+  - A "distribution across categories" trend → donut_chart
+  - A "before vs after" trend → slope_chart
+  - A "two-metric relationship" trend → scatter_plot
+
+If after creative reframing you still cannot diversify the top 3, mark some candidates as feasible: false with reason "ranked-bar-saturation: skipping to surface visual variety in this run." This is preferable to surfacing three identical-looking charts.
+
+Repetitive visual templates across runs is the #1 quality issue users complain about. Prioritize variety aggressively when there's any reasonable mapping.
+
+Accountability: when you call submit_reframed_candidates, you MUST also fill the template_diversity_check object with:
+- distinct_templates_in_top_3: integer count of distinct visual_template values across feasible candidates in your top 3.
+- recent_templates_avoided: array of template ids from the recent-runs list (in the user message) that you intentionally did NOT pick this run.
+- diversity_rationale: a short sentence explaining how this top-3 set provides visual variety, e.g., "Used ranked_horizontal_bar once, diverging_horizontal_bar for the YoY-deltas trend, and donut_chart for the geographic distribution."`;
 
 /**
  * Short shape-based hints to help Sonnet pick the RIGHT template instead of defaulting to
@@ -73,25 +105,19 @@ Hard rules:
 - Two metrics on the same entities -> scatter_plot.
 - Many entities over time -> multi_line_timeseries (max 5) instead of stacking single_line_timeseries posts.`;
 
-function formatRecentTemplateHistory(recentTemplates: string[]) {
+function formatRecentTemplatesBlock(recentTemplates: string[]) {
   if (!recentTemplates.length) {
-    return 'Recent run history is empty (no recent visual_template choices to avoid).';
-  }
-  const lines = recentTemplates.map((template, index) => `  ${index + 1}. ${template}`).join('\n');
-  return `Visual templates already used by the most recent runs (newest first):
-${lines}`;
-}
+    return `Recently used visual_template values across the last 5 saved runs:
+(no saved runs yet — no templates to avoid)
 
-function formatTemplateUsageCounts(recentTemplates: string[]) {
-  if (!recentTemplates.length) return '';
-  const counts = new Map<string, number>();
-  for (const template of recentTemplates) {
-    counts.set(template, (counts.get(template) || 0) + 1);
+Pick the template that fits the data shape; you have a clean slate.`;
   }
-  const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-  const formatted = sorted.map(([template, count]) => `  - ${template}: ${count}`).join('\n');
-  return `Recent usage counts:
-${formatted}`;
+
+  const bullets = recentTemplates.map((template) => `- ${template}`).join('\n');
+  return `Recently used visual_template values across the last 5 saved runs:
+${bullets}
+
+Heavily prefer template values NOT in this list. If the candidate pool requires reusing a recent template, prefer the LEAST-used one. The dashboard becomes visually monotonous when the same template repeats; aggressive variety is the goal.`;
 }
 
 export function buildReframeCandidatesPrompt(
@@ -100,14 +126,6 @@ export function buildReframeCandidatesPrompt(
   options: { recentVisualTemplates?: string[] } = {}
 ) {
   const recentTemplates = options.recentVisualTemplates ?? [];
-  const overuseCounts = recentTemplates.reduce<Map<string, number>>((counts, template) => {
-    counts.set(template, (counts.get(template) || 0) + 1);
-    return counts;
-  }, new Map());
-  const overusedTemplates = Array.from(overuseCounts.entries())
-    .filter(([, count]) => count >= 2)
-    .sort((a, b) => b[1] - a[1])
-    .map(([template]) => template);
 
   return `Top feasible scored candidates:
 ${JSON.stringify({ scored_candidates: scoredCandidates }, null, 2)}
@@ -117,14 +135,14 @@ ${endpointRegistry}
 
 ${VISUAL_TEMPLATE_GUIDE}
 
-${formatRecentTemplateHistory(recentTemplates)}
-${formatTemplateUsageCounts(recentTemplates)}
+${formatRecentTemplatesBlock(recentTemplates)}
 
 Pass 2 task: fully reframe only these feasible candidates into deterministic Crustdata query specs and post-ready presentation fields.
 
 Rules:
 - Return one item for each input candidate. Do not add new candidates.
 - Use exactly one usable Crustdata endpoint from the registry for each crustdata_query.
+- crustdata_query.intent MUST be copied exactly from the endpoint's supported_intents list in the registry. Do not write a sentence or explanation in intent; put explanations in rationale.
 - Do not invent endpoints, params, fields, operators, or capabilities.
 - crustdata_query.params may contain only documented required_params and optional_params from the registry. Do not include helper keys such as post_processing, _note, grouping_notes, transform, or client_side_grouping.
 - Put grouping/aggregation instructions in rationale or expected_data_shape, not in crustdata_query.params, unless the endpoint documents an aggregations param.
@@ -133,20 +151,11 @@ Rules:
 - For /job/search count posts, prefer limit: 0 plus count/group_by aggregations.
 - For row-returning search posts, request at least 5 rows.
 - visual_template MUST be exactly one of: ${VISUAL_TEMPLATE_IDS.join(', ')}. Do not invent variants like bar, horizontal_bar, ranked_horizontal_bar_with_left_logos, or line_chart.
-
-Visual-template diversity rules (BINDING — read carefully):
-- The dashboard already has many ranked_horizontal_bar posts. Do not auto-pick ranked_horizontal_bar just because the candidate is "rankable." Match the data SHAPE to the matching template using the selection guide above.
-- Across this candidate pool, prefer DIFFERENT visual_template values for different candidates whenever the data supports it. If two candidates would naturally use the same template, look at each candidate's specific data shape and reframe one of them to a more specific template (e.g., a top-10 ranking with signed deltas should become diverging_horizontal_bar; a "share of" composition should become stacked_horizontal_bar or donut_chart; a 2024-vs-2026 comparison should become slope_chart).
-- Across recent runs, AVOID repeating templates that have been used 2+ times in the recent history above${
-    overusedTemplates.length
-      ? ` — specifically these are currently overused: ${overusedTemplates.join(', ')}. Pick a different template unless the candidate's data shape genuinely has no other fit.`
-      : '.'
-  }
 - Do not pick event_effect_multi_panel_line unless the candidate explicitly requires pre/post comparison across 3+ entities sharing the same event type — it is special-case only.
-- If you genuinely cannot avoid an overused template for a candidate (e.g., it really is a clean top-N ranking of same-type items with all-positive values), keep it AND explain in the rationale why no other template fits the data shape.
-
+- Apply the diversity rule from the system prompt: at most ONE candidate may use ranked_horizontal_bar across the surfaced top 3.
 - Do not use autocomplete endpoints as final post data unless the candidate is specifically about valid filter-value suggestions.
 - If you discover a candidate actually cannot be answered, set feasible: false and submit only: candidate_id, feasible, reason, source, source_url, scores, matched_archetype, matched_angle, matched_visual. Omit headline, subhead, rationale, crustdata_query, visual_template, and expected_data_shape entirely.
+- After choosing visual_template values, fill the top-level template_diversity_check field on the tool input with distinct_templates_in_top_3, recent_templates_avoided, and diversity_rationale (see the system prompt for definitions). Be honest — distinct_templates_in_top_3 must equal the actual number of distinct visual_template values across feasible candidates you submit.
 - Submit all reframed candidates through the submit_reframed_candidates tool.`;
 }
 
@@ -154,6 +163,17 @@ export function isReframedCandidate(value: unknown): value is ReframedCandidate 
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const candidate = value as Partial<ReframedCandidate>;
   return typeof candidate.candidate_id === 'string' && typeof candidate.feasible === 'boolean';
+}
+
+/**
+ * Pure helper used by Stage 2 to decide whether the reframer's top-3 set is diverse enough.
+ * Returns the soft warning copy when fewer than 2 distinct templates appear; otherwise null.
+ *
+ * Exported so the validator + tests can share the same threshold without duplicating it.
+ */
+export function buildDiversityWarning(distinctTemplatesInTop3: number): string | null {
+  if (distinctTemplatesInTop3 >= 2) return null;
+  return 'Limited template variety this run — consider rerolling.';
 }
 
 export function toCandidateSpec(candidate: ReframedCandidate): CandidateSpec {
