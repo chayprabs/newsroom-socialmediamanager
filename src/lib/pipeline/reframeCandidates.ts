@@ -38,6 +38,7 @@ Rules:
 - Prefer broad query specs likely to return enough data for a chart.
 - For /job/search count posts, prefer limit: 0 plus count/group_by aggregations.
 - For row-returning search posts, request at least 5 rows.
+- visual_template MUST be exactly one of: ranked_horizontal_bar, ranked_horizontal_bar_with_icons, vertical_bar_comparison, single_line_timeseries, annotated_line_timeseries, event_effect_multi_panel_line. Do not invent variants like bar, horizontal_bar, ranked_horizontal_bar_with_left_logos, or line_chart.
 - Do not use autocomplete endpoints as final post data unless the candidate is specifically about valid filter-value suggestions.
 - If you discover a candidate actually cannot be answered, set feasible: false and output only: candidate_id, feasible, reason, source, source_url, scores, matched_archetype, matched_angle, matched_visual. Omit headline, subhead, rationale, crustdata_query, visual_template, and expected_data_shape entirely.
 
@@ -95,7 +96,7 @@ export function toCandidateSpec(candidate: ReframedCandidate): CandidateSpec {
       intent: candidate.crustdata_query?.intent,
       params: candidate.crustdata_query?.params || {},
     },
-    visual_template: candidate.visual_template || candidate.matched_visual || 'bar',
+    visual_template: candidate.visual_template || candidate.matched_visual || '',
     expected_data_shape: candidate.expected_data_shape,
   };
 }

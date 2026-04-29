@@ -10,7 +10,7 @@ import {
   validateImagePrompt,
 } from './imagePromptValidator';
 
-const COMPLIANT_PROMPT = `Create a ${CANVAS_SIZE} image. Content fits inside the ${SAFE_AREA} safe area.
+const COMPLIANT_PROMPT = `Create a portrait social media post using the full available portrait canvas.
 BACKGROUND: Solid lavender, exact hex ${REQUIRED_BACKGROUND_HEX}, full bleed, edge to edge.
 HEADLINE: heavy-weight sans-serif, color #111111, ~58pt — do not crop or cut off any part of the headline.
 BARS: solid #6B5BD9.
@@ -98,7 +98,7 @@ describe('validateImagePrompt', () => {
     });
 
     it('flags fewer than 3 distinct hex colors', () => {
-      const sparsePrompt = `${REQUIRED_BACKGROUND_HEX} full bleed ${CANVAS_SIZE} ${SAFE_AREA} ${REQUIRED_FOOTER_TEXT} hexagonal do not crop #111111`;
+      const sparsePrompt = `portrait ${REQUIRED_BACKGROUND_HEX} full bleed ${REQUIRED_FOOTER_TEXT} hexagonal do not crop #111111`;
 
       const result = validateImagePrompt(sparsePrompt);
 
@@ -108,13 +108,12 @@ describe('validateImagePrompt', () => {
       }
     });
 
-    it('flags missing canvas size and safe area', () => {
-      const result = validateImagePrompt(COMPLIANT_PROMPT.replaceAll(CANVAS_SIZE, '999x999').replaceAll(SAFE_AREA, '888x888'));
+    it('flags a missing portrait layout instruction', () => {
+      const result = validateImagePrompt(COMPLIANT_PROMPT.replaceAll('portrait', 'social'));
 
       expect(result.valid).toBe(false);
       if (!result.valid) {
-        expect(result.missing.some((m) => m.includes(CANVAS_SIZE))).toBe(true);
-        expect(result.missing.some((m) => m.includes(SAFE_AREA))).toBe(true);
+        expect(result.missing).toContain('portrait layout instruction');
       }
     });
   });
@@ -167,7 +166,7 @@ describe('validateImagePrompt', () => {
     it('exposes the env-driven canvas, safe area, export size, and background mode constants', () => {
       expect(CANVAS_SIZE).toMatch(/^\d+x\d+$/);
       expect(SAFE_AREA).toMatch(/^\d+x\d+$/);
-      expect(EXPORT_SIZE).toMatch(/^\d+x\d+$/);
+      expect(EXPORT_SIZE === 'auto' || /^\d+x\d+$/.test(EXPORT_SIZE)).toBe(true);
     });
   });
 });

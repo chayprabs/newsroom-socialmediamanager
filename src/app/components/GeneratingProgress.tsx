@@ -48,10 +48,7 @@ export function GeneratingProgress() {
 
   const visibleError = run?.error || (!run ? error : '');
   const errorDetails = run?.error_details;
-  const isStage4aFailure =
-    errorDetails?.kind === 'image_prompt_validation_failed' ||
-    errorDetails?.kind === 'image_prompt_too_long' ||
-    errorDetails?.kind === 'openai_image_rejected';
+  const isImagePromptValidationFailure = errorDetails?.kind === 'image_prompt_validation_failed';
 
   const StepIndicator = ({ status }: { status: string }) => {
     if (status === 'done') {
@@ -189,8 +186,8 @@ export function GeneratingProgress() {
                     <DebugBundle
                       runId={runId}
                       visible={run?.status === 'failed'}
-                      filter={isStage4aFailure ? 'stage_4a_' : undefined}
-                      label={isStage4aFailure ? 'View debug bundle (Stage 4a)' : 'View debug bundle'}
+                      filter={isImagePromptValidationFailure ? 'stage_4a_' : undefined}
+                      label={isImagePromptValidationFailure ? 'View debug bundle (Stage 4a)' : 'View debug bundle'}
                     />
                   </div>
                 ) : null}

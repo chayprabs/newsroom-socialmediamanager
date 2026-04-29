@@ -4,13 +4,15 @@
  * Runs after Sonnet returns the filled GPT-image-2 prompt and BEFORE the hard-cap check.
  * Required substrings block (cause a retry); soft warnings are logged but do not block.
  *
- * The canvas size and safe-area dimensions are read from the same env vars the prompt
- * builder uses, so a single source of truth governs both the prompt and the validator.
+ * Canvas/export env values are still surfaced for diagnostics, but validation now checks
+ * for a portrait layout contract instead of requiring exact pixel dimensions in the prompt.
+ * GPT-image-2 receives the exact generation size via the API call, and post-processing
+ * preserves the full generated image instead of cropping to a centered safe area.
  */
 
 const DEFAULT_CANVAS_SIZE = '1024x1536';
 const DEFAULT_SAFE_AREA = '1024x1280';
-const DEFAULT_EXPORT_SIZE = '1080x1350';
+const DEFAULT_EXPORT_SIZE = 'auto';
 const DEFAULT_BACKGROUND_MODE = 'opaque';
 
 export const CANVAS_SIZE = process.env.OPENAI_IMAGE_SIZE ?? DEFAULT_CANVAS_SIZE;
@@ -26,6 +28,7 @@ const HEX_COLOR_REGEX = /#[0-9A-Fa-f]{6}/g;
 const FULL_BLEED_RE = /full[-\s]bleed/i;
 const HEXAGONAL_RE = /hexagonal/i;
 const DO_NOT_CROP_RE = /(do not crop|must not be cropped|not cropped)/i;
+const PORTRAIT_RE = /\bportrait\b/i;
 
 const PARAPHRASE_WORDS = ['stylish', 'modern', 'clean'] as const;
 const STYLE_PARAPHRASE_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
@@ -103,12 +106,8 @@ export function validateImagePrompt(prompt: string): ValidationResult {
     missing.push('do-not-crop instruction ("do not crop", "must not be cropped", or "not cropped")');
   }
 
-  if (!prompt.includes(CANVAS_SIZE)) {
-    missing.push(`canvas size (${CANVAS_SIZE})`);
-  }
-
-  if (!prompt.includes(SAFE_AREA)) {
-    missing.push(`safe area (${SAFE_AREA})`);
+  if (!PORTRAIT_RE.test(prompt)) {
+    missing.push('portrait layout instruction');
   }
 
   const hexColors = extractHexColors(prompt);

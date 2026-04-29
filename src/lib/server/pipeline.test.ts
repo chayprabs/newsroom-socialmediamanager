@@ -22,7 +22,7 @@ describe('validateFeasibility', () => {
           aggregations: [{ type: 'group_by', column: 'location.country', agg: 'count', size: 10 }],
         },
       },
-      visual_template: 'bar',
+      visual_template: 'ranked_horizontal_bar',
     });
 
     expect(result.feasible).toBe(true);
@@ -41,7 +41,7 @@ describe('validateFeasibility', () => {
           urls: ['https://news.ycombinator.com/item?id=123456'],
         },
       },
-      visual_template: 'bar',
+      visual_template: 'ranked_horizontal_bar',
     });
 
     expect(result.feasible).toBe(false);
@@ -58,7 +58,7 @@ describe('validateFeasibility', () => {
         intent: 'web_fetch',
         params: {},
       },
-      visual_template: 'bar',
+      visual_template: 'ranked_horizontal_bar',
     });
 
     expect(result.feasible).toBe(false);
@@ -76,7 +76,7 @@ describe('validateFeasibility', () => {
         endpoint: '',
         params: {},
       },
-      visual_template: 'bar',
+      visual_template: 'ranked_horizontal_bar',
     });
 
     expect(result.feasible).toBe(false);
@@ -97,11 +97,37 @@ describe('validateFeasibility', () => {
           fields: ['job_details.title', 'company.basic_info.name'],
         },
       },
-      visual_template: 'bar',
+      visual_template: 'ranked_horizontal_bar',
     });
 
     expect(result.feasible).toBe(false);
     expect(result.reason).toMatch(/too narrow|at least 5 rows/);
+  });
+
+  it('rejects visual templates without a matching design.md worked example', () => {
+    const result = validateFeasibility({
+      candidate_id: 'c_bad_visual_template',
+      headline: 'Where do OpenAI alumni go?',
+      subhead: 'Current employers for former OpenAI employees.',
+      crustdata_query: {
+        endpoint: '/person/search',
+        intent: 'alumni_analysis',
+        params: {
+          filters: {
+            field: 'experience.employment_details.past.name',
+            type: '=',
+            value: 'OpenAI',
+          },
+          fields: ['basic_profile.name', 'experience.employment_details.current.name'],
+          limit: 50,
+        },
+      },
+      visual_template: 'ranked_horizontal_bar_with_left_logos',
+    });
+
+    expect(result.feasible).toBe(false);
+    expect(result.reason).toContain('Unsupported visual_template');
+    expect(result.mapped_endpoints).toEqual([]);
   });
 });
 

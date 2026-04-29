@@ -25,7 +25,7 @@ const data: GeneratedPostData = {
 
 const createdRuns: string[] = [];
 
-const COMPLIANT_PROMPT = `Create a ${CANVAS_SIZE} image. Content fits inside the ${SAFE_AREA} safe area.
+const COMPLIANT_PROMPT = `Create a portrait social media post using the full available portrait canvas.
 BACKGROUND: Solid lavender, exact hex #E8E6F5, full bleed, edge to edge.
 HEADLINE: heavy-weight sans-serif, color #111111, ~58pt — do not crop or cut off any part of the headline.
 BARS: solid #6B5BD9.
@@ -67,7 +67,7 @@ describe('canvas env constants', () => {
   it('expose env-driven canvas dimensions and background mode', () => {
     expect(CANVAS_SIZE).toMatch(/^\d+x\d+$/);
     expect(SAFE_AREA).toMatch(/^\d+x\d+$/);
-    expect(EXPORT_SIZE).toMatch(/^\d+x\d+$/);
+    expect(EXPORT_SIZE === 'auto' || /^\d+x\d+$/.test(EXPORT_SIZE)).toBe(true);
     expect(typeof BACKGROUND_MODE).toBe('string');
     expect(BACKGROUND_MODE.length).toBeGreaterThan(0);
   });

@@ -10,18 +10,17 @@ primary_consumer_agents:
   - "GPT-image-2 image generation"
   - "Newsroom image template registry"
 runtime_substitution:
-  note: "Placeholders {{OPENAI_IMAGE_SIZE}}, {{OPENAI_IMAGE_SAFE_AREA}}, {{OPENAI_IMAGE_EXPORT_SIZE}} are substituted by the imagePromptBuilder before this file is sent to Sonnet."
+  note: "Placeholders {{OPENAI_IMAGE_SIZE}} and {{OPENAI_IMAGE_EXPORT_SIZE}} are substituted by the imagePromptBuilder before this file is sent to Sonnet. {{OPENAI_IMAGE_SAFE_AREA}} is kept only as a legacy env/debug value and must not be used as a centered crop box in prompts."
   defaults:
     OPENAI_IMAGE_SIZE: "1024x1536"
-    OPENAI_IMAGE_SAFE_AREA: "1024x1280"
-    OPENAI_IMAGE_EXPORT_SIZE: "1080x1350"
+    OPENAI_IMAGE_EXPORT_SIZE: "auto"
 visual_source_priority:
   primary: "Uploaded reference posts."
   secondary: "Official/founder web snippets only for editorial confirmation, not pixel extraction."
 important_note: "v2 of this spec is prescriptive: GPT-image-2 needs literal specifications, not paraphrases. Do not say 'in the Crustdata style', do not leave any element to model interpretation."
 ```
 
-> **Runtime note:** This file is loaded into context only for the Stage 2 reframer step that selects visual templates and the Stage 4a GPT-image-2 image prompt builder. Anthropic prompt caching is enabled when this prefix is used. The prompt builder reads `OPENAI_IMAGE_SIZE`, `OPENAI_IMAGE_SAFE_AREA`, and `OPENAI_IMAGE_EXPORT_SIZE` from `.env.local` at module load and substitutes the `{{...}}` placeholders below before passing the file to Sonnet.
+> **Runtime note:** This file is loaded into context only for the Stage 2 reframer step that selects visual templates and the Stage 4a GPT-image-2 image prompt builder. Anthropic prompt caching is enabled when this prefix is used. The prompt builder reads `OPENAI_IMAGE_SIZE` and `OPENAI_IMAGE_EXPORT_SIZE` from `.env.local` at module load and substitutes the `{{...}}` placeholders below before passing the file to Sonnet. `OPENAI_IMAGE_SAFE_AREA` remains in env snapshots for backwards-compatible diagnostics only; it is no longer a crop target and must not be written into image prompts as a centered safe area.
 
 ---
 
@@ -61,24 +60,25 @@ This section is the contract for every generated image. The Stage 4a prompt buil
 ```yaml
 mandatory_canvas:
   format:
-    aspect_ratio: "2:3 portrait"
+    aspect_ratio: "portrait social media post"
     canvas_size: "{{OPENAI_IMAGE_SIZE}}"
-    safe_area: "{{OPENAI_IMAGE_SAFE_AREA}}"
+    canvas_size_role: "OpenAI API generation size only. Do not draw a visible frame, border, safe-area guide, or fixed 4:5 crop target."
     bleed: "no border, no margin around edges, full-bleed background"
     final_export_size: "{{OPENAI_IMAGE_EXPORT_SIZE}}"
-    safe_area_explanation: "The {{OPENAI_IMAGE_SAFE_AREA}} safe area is centered inside the {{OPENAI_IMAGE_SIZE}} canvas. ~128px of vertical breathing room (split evenly top/bottom) prevents cropping when exporting to {{OPENAI_IMAGE_EXPORT_SIZE}}. All title text, chart elements, and footer MUST fit inside the safe area."
+    final_export_rule: "Export preserves the full generated portrait canvas. If final_export_size is 'auto', keep the native generated dimensions. If final_export_size is WIDTHxHEIGHT, resize with contain/letterbox on lavender #E8E6F5, never center-crop."
+    no_crop_rule: "Use the full portrait canvas. Keep all title text, chart elements, labels, and footer comfortably inside the visible image with generous inner margins. Never rely on post-processing crop to fix layout."
 
   background:
     color: "#E8E6F5"
     description: "soft lavender, slightly cool, never white, never light gray, never light blue"
     style: "solid color only — no gradients, no textures, no patterns, no noise"
-    coverage: "full bleed, edge to edge, including outside the safe area"
+    coverage: "full bleed, edge to edge across the entire visible portrait canvas"
 
   title_block:
-    position: "top of canvas, inside the safe area"
-    top_margin: "60-80px from top edge of canvas"
+    position: "top of the visible portrait canvas"
+    top_margin: "80-110px from top edge of canvas"
     height: "approximately 18-22% of canvas height"
-    must_not_crop: "the full headline MUST be visible at all times — never cut off, never extend outside the safe area"
+    must_not_crop: "the full headline MUST be visible at all times — never cut off, never touch or extend past the canvas edge"
     headline:
       font: "heavy weight sans-serif (Inter Black, Helvetica Bold, or equivalent)"
       color: "#111111"
@@ -97,15 +97,15 @@ mandatory_canvas:
       line_height: "1.3"
 
   chart_area:
-    position: "center 60-70% of canvas, inside the safe area"
+    position: "center 60-70% of the visible portrait canvas"
     horizontal_padding: "~80px from left and right edges of canvas"
     vertical_padding: "~32px gap above (from subtitle) and below (from footer)"
     background: "transparent — chart sits on the lavender canvas, no inner card or panel"
 
   footer:
     required: true
-    placement: "bottom-center of canvas, inside the safe area"
-    bottom_margin: "40-60px from bottom edge"
+    placement: "bottom-center of the visible portrait canvas"
+    bottom_margin: "60-80px from bottom edge"
     layout: "horizontal row, centered: '[Data from: label] [hexagonal logo icon] [Crustdata wordmark]'"
     elements:
       data_from_label:
@@ -236,8 +236,8 @@ composition_rules:
     rule: "Generated image text must be clean. Do not copy typos or lowercase month abbreviations from source images."
   avoid_overcrowding:
     rule: "Use 3-12 chart items in a ranked chart. If more, group into 'Other' or switch templates."
-  safe_area_discipline:
-    rule: "All title text, chart elements, and footer must fit inside the {{OPENAI_IMAGE_SAFE_AREA}} safe area."
+  no_crop_layout:
+    rule: "All title text, chart elements, and footer must fit comfortably inside the visible portrait canvas with generous inner margins. Do not reference a centered safe-area crop box."
 ```
 
 ---
@@ -252,7 +252,7 @@ footer:
 
   layout:
     alignment: "center"
-    y_position: "40-60px from bottom edge of canvas, inside the safe area"
+    y_position: "60-80px from bottom edge of the visible canvas"
     sequence:
       - element: "Data from:"
         font_size: "13pt"
@@ -405,12 +405,12 @@ These are complete prompt skeletons. The Stage 4a prompt builder copies the matc
 ### 8.1 `ranked_horizontal_bar` — complete prompt skeleton
 
 ```text
-Create a {{OPENAI_IMAGE_SIZE}} image (2:3 portrait social media post). All content must fit inside the {{OPENAI_IMAGE_SAFE_AREA}} safe area, which is centered inside the canvas with ~128px of vertical breathing room (split evenly top/bottom) — no title, chart element, or footer text may extend outside this safe zone.
+Create a portrait social media post using the full available portrait canvas. The API generation canvas is {{OPENAI_IMAGE_SIZE}}, but do not draw or describe a fixed frame, crop zone, safe-area guide, border, or 4:5 export target. Keep all content comfortably inside the visible portrait image with generous inner margins — no title, chart element, or footer text may touch or extend past the canvas edge.
 
 BACKGROUND: Solid lavender, exact hex #E8E6F5, full bleed, edge to edge. No border, no margin, no gradient, no texture, no pattern.
 
-TITLE BLOCK (top 18-22% of canvas, ~70px from top edge of canvas):
-Headline: "{{HEADLINE}}" — heavy-weight sans-serif (Inter Black or Helvetica Bold), exact color #111111, ~58pt, tight line-height 1.05, max 2 lines, centered. The full headline MUST be visible, not cropped, not extending beyond the safe area.
+TITLE BLOCK (top 18-22% of canvas, ~90px from top edge of canvas):
+Headline: "{{HEADLINE}}" — heavy-weight sans-serif (Inter Black or Helvetica Bold), exact color #111111, ~58pt, tight line-height 1.05, max 2 lines, centered. The full headline MUST be visible, not cropped, not touching or extending past the canvas edge.
 Subtitle: "{{SUBTITLE}}" — medium-weight sans-serif, exact color #555555, ~20pt, centered, ~12px below headline.
 
 CHART AREA (center 60-65% of canvas, ~80px horizontal padding from canvas edges):
@@ -450,12 +450,12 @@ GLOBAL CONSTRAINTS (do not violate any):
 ### 8.2 `single_line_timeseries` — complete prompt skeleton
 
 ```text
-Create a {{OPENAI_IMAGE_SIZE}} image (2:3 portrait social media post). All content must fit inside the {{OPENAI_IMAGE_SAFE_AREA}} safe area, which is centered inside the canvas with ~128px of vertical breathing room (split evenly top/bottom) — no title, chart element, or footer text may extend outside this safe zone.
+Create a portrait social media post using the full available portrait canvas. The API generation canvas is {{OPENAI_IMAGE_SIZE}}, but do not draw or describe a fixed frame, crop zone, safe-area guide, border, or 4:5 export target. Keep all content comfortably inside the visible portrait image with generous inner margins — no title, chart element, or footer text may touch or extend past the canvas edge.
 
 BACKGROUND: Solid lavender, exact hex #E8E6F5, full bleed, edge to edge. No border, no margin, no gradient, no texture, no pattern.
 
-TITLE BLOCK (top 18-22% of canvas, ~70px from top edge of canvas):
-Headline: "{{HEADLINE}}" — heavy-weight sans-serif (Inter Black or Helvetica Bold), exact color #111111, ~58pt, tight line-height 1.05, max 2 lines, centered. The full headline MUST be visible, not cropped, not extending beyond the safe area.
+TITLE BLOCK (top 18-22% of canvas, ~90px from top edge of canvas):
+Headline: "{{HEADLINE}}" — heavy-weight sans-serif (Inter Black or Helvetica Bold), exact color #111111, ~58pt, tight line-height 1.05, max 2 lines, centered. The full headline MUST be visible, not cropped, not touching or extending past the canvas edge.
 Subtitle: "{{SUBTITLE}}" — medium-weight sans-serif, exact color #555555, ~20pt, centered, ~12px below headline.
 
 CHART AREA (center 60-65% of canvas, ~80px horizontal padding from canvas edges):
@@ -496,12 +496,12 @@ GLOBAL CONSTRAINTS (do not violate any):
 ### 8.3 `vertical_bar_comparison` — complete prompt skeleton
 
 ```text
-Create a {{OPENAI_IMAGE_SIZE}} image (2:3 portrait social media post). All content must fit inside the {{OPENAI_IMAGE_SAFE_AREA}} safe area, which is centered inside the canvas with ~128px of vertical breathing room (split evenly top/bottom) — no title, chart element, or footer text may extend outside this safe zone.
+Create a portrait social media post using the full available portrait canvas. The API generation canvas is {{OPENAI_IMAGE_SIZE}}, but do not draw or describe a fixed frame, crop zone, safe-area guide, border, or 4:5 export target. Keep all content comfortably inside the visible portrait image with generous inner margins — no title, chart element, or footer text may touch or extend past the canvas edge.
 
 BACKGROUND: Solid lavender, exact hex #E8E6F5, full bleed, edge to edge. No border, no margin, no gradient, no texture, no pattern.
 
-TITLE BLOCK (top 18-22% of canvas, ~70px from top edge of canvas):
-Headline: "{{HEADLINE}}" — heavy-weight sans-serif (Inter Black or Helvetica Bold), exact color #111111, ~58pt, tight line-height 1.05, max 2 lines, centered. The full headline MUST be visible, not cropped, not extending beyond the safe area.
+TITLE BLOCK (top 18-22% of canvas, ~90px from top edge of canvas):
+Headline: "{{HEADLINE}}" — heavy-weight sans-serif (Inter Black or Helvetica Bold), exact color #111111, ~58pt, tight line-height 1.05, max 2 lines, centered. The full headline MUST be visible, not cropped, not touching or extending past the canvas edge.
 Subtitle: "{{SUBTITLE}}" — medium-weight sans-serif, exact color #555555, ~20pt, centered, ~12px below headline.
 
 CHART AREA (center 60-65% of canvas, ~80px horizontal padding from canvas edges):
@@ -635,11 +635,11 @@ visual_acceptance_checklist:
     - "Values match supplied data exactly. No invented rows or values."
   footer:
     - "Footer is present and reads 'Data from: [hexagonal logo] Crustdata'."
-    - "Footer is centered horizontally at the bottom of the safe area."
+    - "Footer is centered horizontally near the bottom of the visible portrait canvas."
     - "Brand wordmark is spelled 'Crustdata' (capital C only, never CrustData or CRUSTDATA)."
     - "Hexagonal logo icon is rendered between 'Data from:' and 'Crustdata'."
-  safe_area:
-    - "All title text, chart elements, and footer fit inside the {{OPENAI_IMAGE_SAFE_AREA}} safe area."
+  no_crop_layout:
+    - "All title text, chart elements, and footer fit comfortably inside the visible portrait canvas. Nothing is cropped by post-processing."
   global:
     - "No gradients, no drop shadows, no 3D effects, no neon/glow, no glassmorphism."
     - "No emoji, no script/handwritten/display fonts, no decorative photography."
@@ -665,7 +665,7 @@ do_not:
   - "Do NOT use script, handwritten, or display fonts. Sans-serif only."
   - "Do NOT use ALL CAPS for the headline (sentence case or Title Case only)."
   - "Do NOT include decorative photography or illustrative imagery in the background."
-  - "Do NOT place any content outside the safe area — all title text, chart elements, and footer must fit inside the {{OPENAI_IMAGE_SAFE_AREA}} zone."
+  - "Do NOT place any content at or beyond the canvas edge — all title text, chart elements, and footer must fit comfortably inside the visible portrait image."
   - "Do NOT show fewer than 3 data points/categories in a ranked chart."
   - "Do NOT show more than 12 categories in a single ranked horizontal bar chart."
   - "Do NOT copy typos, lowercase month abbreviations, or other casualisms from source images."

@@ -256,7 +256,7 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with the demo cr
 | `OPENAI_IMAGE_QUALITY` | `high` |
 | `OPENAI_IMAGE_FORMAT` | `png` |
 | `OPENAI_IMAGE_BACKGROUND` | `opaque` |
-| `OPENAI_IMAGE_EXPORT_SIZE` | `1080x1350` |
+| `OPENAI_IMAGE_EXPORT_SIZE` | `auto` |
 | `OPENAI_IMAGE_SAFE_AREA` | `1024x1280` |
 
 ### Optional / local‑only
@@ -446,22 +446,22 @@ Stage 4 is split into two sub‑steps:
 1. **Stage 4a — prompt builder.** Sonnet reads `design/design.md`, fills the matching worked-example skeleton, and returns a structured `submit_image_prompt` tool call with `prompt`, `template_used`, `character_count`, and `hex_colors_used`.
 2. **Stage 4b — image call.** The validated prompt is sent to GPT‑Image‑2, then the generated image is normalized/exported in `src/lib/server/image.ts`.
 
-`src/lib/pipeline/imagePromptValidator.ts` runs between 4a and 4b. It blocks prompts that are missing required visual elements: the lavender background hex `#E8E6F5`, `full bleed`/`full-bleed`, exact footer text `Data from: Crustdata`, a `hexagonal` logo description, a do-not-crop headline instruction, at least three literal hex colors, the active canvas size, and the active safe area. It also logs warnings for vague style phrases like `in the Crustdata style`, rainbow/varied color language, and suspicious rounded-bar wording.
+`src/lib/pipeline/imagePromptValidator.ts` runs between 4a and 4b. It blocks prompts that are missing required visual elements: the lavender background hex `#E8E6F5`, `full bleed`/`full-bleed`, exact footer text `Data from: Crustdata`, a `hexagonal` logo description, a do-not-crop headline instruction, portrait layout language, and at least three literal hex colors. It also logs warnings for vague style phrases like `in the Crustdata style`, rainbow/varied color language, and suspicious rounded-bar wording.
 
 Canvas dimensions come from env at module load:
 
 | Variable | Default | Used for |
 | --- | --- | --- |
-| `OPENAI_IMAGE_SIZE` | `1024x1536` | GPT‑Image‑2 generation canvas and literal prompt text |
-| `OPENAI_IMAGE_SAFE_AREA` | `1024x1280` | no-crop zone that the prompt requires all content to fit inside |
-| `OPENAI_IMAGE_EXPORT_SIZE` | `1080x1350` | final dashboard/download export |
+| `OPENAI_IMAGE_SIZE` | `1024x1536` | GPT‑Image‑2 API generation canvas; prompts describe this as portrait rather than a visible frame |
+| `OPENAI_IMAGE_SAFE_AREA` | `1024x1280` | legacy debug/env value only; no longer used as a crop box |
+| `OPENAI_IMAGE_EXPORT_SIZE` | `auto` | `auto` preserves the full generated image; `WIDTHxHEIGHT` resizes with contain/letterbox on lavender, never crops |
 | `OPENAI_IMAGE_BACKGROUND` | `opaque` | OpenAI API background mode; prompt still pins lavender `#E8E6F5` |
 
-The builder substitutes these env values into `design.md` placeholders and into the Stage 4a system prompt before calling Sonnet, so the same dimensions reach both the model prompt and the OpenAI API call.
+The builder substitutes the relevant env values into `design.md` placeholders and into the Stage 4a system prompt before calling Sonnet. The OpenAI API still receives an exact generation size, but the generated post is treated as a flexible portrait composition and the exporter preserves the full image instead of center-cropping to a safe area.
 
 When an image fails to match expectations, inspect `runs/<runId>/debug/` or use the **View debug bundle** section in the UI. The most useful files are `stage_4_image_prompt.txt`, `stage_4_image_prompt_meta.json`, `stage_4a_validation_result.json`, `stage_4a_env_snapshot.json`, and `stage_4a_attempt_*.txt`. Validation failures also preserve `stage_4a_validation_failure_*.json`.
 
-`design/design.md` is the source of truth for visual specs. To change the look — background, footer, typography, chart skeletons, color rules, safe-area language — edit `design.md`, not the pipeline code. The code only enforces that the prompt contains the required pieces.
+`design/design.md` is the source of truth for visual specs. To change the look — background, footer, typography, chart skeletons, color rules, or portrait layout language — edit `design.md`, not the pipeline code. The code only enforces that the prompt contains the required pieces.
 
 ---
 

@@ -61,7 +61,7 @@ const LANDSCAPE_OPENAI_IMAGE_SIZE = '1536x1024';
 const DEFAULT_OPENAI_IMAGE_QUALITY = 'high';
 const DEFAULT_OPENAI_IMAGE_FORMAT = 'png';
 const DEFAULT_OPENAI_IMAGE_BACKGROUND = 'opaque';
-const DEFAULT_OPENAI_IMAGE_EXPORT_SIZE = '1080x1350';
+const DEFAULT_OPENAI_IMAGE_EXPORT_SIZE = 'auto';
 const DEFAULT_OPENAI_IMAGE_SAFE_AREA = '1024x1280';
 const API_SAFE_IMAGE_SIZES = new Set(['1024x1024', '1024x1536', '1536x1024']);
 const OPENAI_IMAGE_QUALITIES = new Set<OpenAiImageQuality>(['low', 'medium', 'high', 'auto']);
@@ -243,13 +243,9 @@ export function getOpenAiImageConfig(template = '') {
   const exportSize = process.env.OPENAI_IMAGE_EXPORT_SIZE || DEFAULT_OPENAI_IMAGE_EXPORT_SIZE;
   const safeArea = process.env.OPENAI_IMAGE_SAFE_AREA || DEFAULT_OPENAI_IMAGE_SAFE_AREA;
   const isLandscape = isLandscapeImageTemplate(template);
-  const generationDimensions = parseImageDimensions(size, 'OPENAI_IMAGE_SIZE');
-  const safeAreaDimensions = parseImageDimensions(safeArea, 'OPENAI_IMAGE_SAFE_AREA');
 
-  parseImageDimensions(exportSize, 'OPENAI_IMAGE_EXPORT_SIZE');
-
-  if (!isLandscape && (safeAreaDimensions.width > generationDimensions.width || safeAreaDimensions.height > generationDimensions.height)) {
-    throw new Error(`OPENAI_IMAGE_SAFE_AREA (${safeArea}) must fit inside OPENAI_IMAGE_SIZE (${size}).`);
+  if (exportSize.trim().toLowerCase() !== 'auto') {
+    parseImageDimensions(exportSize, 'OPENAI_IMAGE_EXPORT_SIZE');
   }
 
   return {

@@ -47,7 +47,7 @@ Your output MUST be a complete prompt based on the matching worked-example skele
 
 Every prompt you produce MUST contain, verbatim:
 - The exact background hex #E8E6F5 and the phrase "full bleed".
-- The canvas size {{CANVAS_SIZE}} and safe area {{SAFE_AREA}} from env.
+- The word "portrait" and a clear instruction to use the full available portrait canvas.
 - The exact text "Data from: Crustdata" in the footer with a hexagonal logo description between the label and wordmark.
 - Explicit hex color assignments for every chart element (no "use a nice palette," only literal hex values).
 - The phrase "do not crop or cut off any part of the headline".
@@ -55,7 +55,7 @@ Every prompt you produce MUST contain, verbatim:
 
 Background mode for the GPT-image-2 API call is {{BACKGROUND_MODE}}; the prompt body still must specify the lavender background as a flat solid color, no transparency.
 
-Final export size is {{EXPORT_SIZE}}, but you generate the image at {{CANVAS_SIZE}}. The {{SAFE_AREA}} safe area is centered inside the canvas with ~128px of vertical breathing room split top/bottom — every text block, chart element, and footer piece must fit inside the safe area so nothing is cropped during export.
+The OpenAI API generation size is {{CANVAS_SIZE}} and the export mode is {{EXPORT_SIZE}}, but do not tell GPT-image-2 to design for a centered crop zone or fixed 4:5 frame. The final image export preserves the full generated portrait canvas. Tell GPT-image-2 to keep every text block, chart element, and footer piece comfortably inside the visible portrait composition with generous inner margins.
 
 The validator will reject prompts missing any required element. Failed validation costs us a full retry, so include every element on the first try.`;
 
@@ -162,7 +162,7 @@ function imagePromptTool() {
           prompt: {
             type: 'string',
             description:
-              'Complete GPT-image-2 prompt, must include all required elements: the exact lavender hex #E8E6F5, the phrase "full bleed", the canvas size, the safe area, the "Data from: Crustdata" footer with hexagonal logo, explicit hex color assignments, the do-not-crop-headline phrase, and at least one verbatim do_not rule from design.md.',
+              'Complete GPT-image-2 prompt, must include all required elements: the exact lavender hex #E8E6F5, the phrase "full bleed", portrait layout language, the "Data from: Crustdata" footer with hexagonal logo, explicit hex color assignments, the do-not-crop-headline phrase, and at least one verbatim do_not rule from design.md.',
           },
           template_used: {
             type: 'string',
@@ -191,7 +191,7 @@ ${JSON.stringify(data, null, 2)}
 
 Visual template selected by Stage 2: ${visualTemplate || 'best_matching_template'}
 
-Build the final GPT-image-2 prompt now using the matching worked-example skeleton from design.md (section 8). Substitute only the headline, subtitle, data rows/points, and bar/line color assignments. Every other value is pinned and must appear verbatim. Inline ${CANVAS_SIZE}, ${SAFE_AREA}, #E8E6F5, "full bleed", "Data from: Crustdata" with hexagonal logo, "do not crop or cut off any part of the headline", and at least one relevant do_not rule transcribed verbatim from design.md section 11.
+Build the final GPT-image-2 prompt now using the matching worked-example skeleton from design.md (section 8). Substitute only the headline, subtitle, data rows/points, and bar/line color assignments. Every other value is pinned and must appear verbatim. Inline the portrait layout instruction, #E8E6F5, "full bleed", "Data from: Crustdata" with hexagonal logo, "do not crop or cut off any part of the headline", and at least one relevant do_not rule transcribed verbatim from design.md section 11. Do not describe a centered safe-area crop or fixed 4:5 export frame; use the full available portrait canvas.
 
 Then call submit_image_prompt with the prompt, the template name, the character count, and the full list of hex colors used.`;
 }
