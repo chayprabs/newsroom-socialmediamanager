@@ -9,7 +9,7 @@ export type ImageOutputFormat = 'png' | 'jpeg' | 'webp';
 export type ImageBackground = 'opaque' | 'transparent' | 'auto';
 
 export const PORTRAIT_SAFE_AREA_INSTRUCTION =
-  'Create a portrait social data graphic on a full-bleed lavender #E8E6F5 canvas. Use generous inner margins and keep the full headline, chart, and footer visible. Do not draw a crop box, safe-area guide, border, frame, or white card.';
+  'Create a portrait social data graphic on a full-bleed lavender #E8E6F5 canvas. Use generous inner margins and keep the full headline and chart visible in the top 88% of the canvas. Leave the bottom 12% empty lavender for the deterministic footer overlay. Do not draw a crop box, safe-area guide, border, frame, or white card.';
 
 const LAVENDER_BACKGROUND = '#E8E6F5';
 const LANDSCAPE_TEMPLATE = 'event_effect_multi_panel_line';
@@ -211,11 +211,6 @@ export function renderPostSvg(data: GeneratedPostData, template = '') {
     ${!isDiverging ? `<line x1="${barX}" y1="${axisY}" x2="${barX + maxBarWidth}" y2="${axisY}" stroke="#CCCCCC" stroke-width="2"/>
     <text x="${barX}" y="${axisY + 30}" fill="#888888" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="400">0</text>
     <text x="${barX + maxBarWidth}" y="${axisY + 30}" fill="#888888" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="400">${escapeXml(formatValue(maxValue))}</text>` : ''}
-  </g>
-  <g transform="translate(447 1274)">
-    <text x="0" y="0" fill="#666666" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="400">Data from:</text>
-    <polygon points="97,-16 106,-11 106,0 97,5 88,0 88,-11" fill="#333333"/>
-    <text x="113" y="0" fill="#111111" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="500">Crustdata</text>
   </g>
 </svg>`;
 }

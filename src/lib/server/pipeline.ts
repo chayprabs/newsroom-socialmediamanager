@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import type { CandidateSpec, GeneratedPostData, GenerationStep, RunErrorDetails, RunState } from '../types';
 import {
   type AnthropicCallOptions,
@@ -28,7 +30,8 @@ import {
   ImagePromptTooLongError,
   ImagePromptValidationError,
 } from '../pipeline/imagePromptBuilder';
-import { normalizeGeneratedPostImage, renderPostSvg } from './image';
+import { applyFooterOverlay, type FooterOverlayResult } from '../pipeline/footerOverlay';
+import { renderPostSvg } from './image';
 import {
   formatEndpointCapabilitiesForPrompt,
   getEndpointCapability,
@@ -38,6 +41,7 @@ import {
 } from './clients/crustdata/endpoint_capabilities';
 import {
   appendRunArtifact,
+  getRunDir,
   readMarkdown,
   readRun,
   writeRun,
@@ -792,6 +796,50 @@ async function logFeasibilityDecision(
   return entry;
 }
 
+async function writeStage4cDiagnostics(runId: string, result: FooterOverlayResult) {
+  const debugDir = path.join(getRunDir(runId), 'debug');
+  await fs.mkdir(debugDir, { recursive: true });
+  await fs.writeFile(
+    path.join(debugDir, 'stage_4c_footer_overlay.json'),
+    JSON.stringify(result, null, 2),
+    'utf8'
+  );
+}
+
+async function encodeRawImageAsPng(buffer: Buffer, outputFormat: string) {
+  if (outputFormat === 'png') {
+    return buffer;
+  }
+
+  const sharp = (await import('sharp')).default;
+  return sharp(buffer, { failOn: 'none' }).png().toBuffer();
+}
+
+async function overlayFooterForRun(runId: string, rawImagePath: string, outputImagePath: string, exportSize?: string) {
+  const startedAt = Date.now();
+
+  try {
+    const result = await applyFooterOverlay(rawImagePath, outputImagePath, { exportSize });
+    const durationMs = Date.now() - startedAt;
+
+    await writeStage4cDiagnostics(runId, result);
+    logStageUsage('stage_4c_footer_overlay', runId, {
+      durationMs,
+      footerSource: result.footerSource,
+      success: result.success,
+    });
+
+    return { result, durationMs };
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    logStageUsage('stage_4c_footer_overlay', runId, {
+      durationMs,
+      success: false,
+    });
+    throw error;
+  }
+}
+
 async function createPostImageArtifact(
   runId: string,
   data: GeneratedPostData,
@@ -801,16 +849,16 @@ async function createPostImageArtifact(
 
   if (isOpenAiImageConfigured()) {
     const image = await generateOpenAiImage(prompt, { template });
-    const exportedBuffer = await normalizeGeneratedPostImage(image.buffer, {
-      generationSize: image.size,
-      exportSize: image.exportSize,
-      safeArea: image.safeArea,
-      outputFormat: image.outputFormat,
-      background: image.background,
-      isLandscape: image.isLandscape,
-    });
-    const filename = `post.${image.extension}`;
-    const imagePath = await writeRunBinaryArtifact(runId, filename, exportedBuffer);
+    const rawBuffer = await encodeRawImageAsPng(image.buffer, image.outputFormat);
+    const rawImagePath = await writeRunBinaryArtifact(runId, 'post_raw.png', rawBuffer);
+    const filename = 'post.png';
+    const imagePath = path.join(getRunDir(runId), filename);
+    const { result: footerOverlay } = await overlayFooterForRun(
+      runId,
+      rawImagePath,
+      imagePath,
+      image.exportSize
+    );
 
     if (image.revisedPrompt) {
       await writeRunArtifact(runId, 'openai-revised-image-prompt.txt', image.revisedPrompt);
@@ -826,21 +874,29 @@ async function createPostImageArtifact(
         model: image.model,
         size: image.size,
         output_format: image.outputFormat,
+        raw_filename: 'post_raw.png',
+        final_filename: filename,
       })}\n`
     );
 
     return {
       imagePath,
       filename,
-      mimeType: image.mimeType,
+      mimeType: 'image/png',
       model: image.model,
       logMessage: image.isLandscape
-        ? `Generated landscape image with OpenAI ${image.model} at ${image.size}.`
-        : `Generated image with OpenAI ${image.model} at ${image.size} and exported ${image.exportSize}.`,
+        ? `Generated landscape image with OpenAI ${image.model} at ${image.size}; Stage 4c applied footer from ${footerOverlay.footerSource}.`
+        : `Generated image with OpenAI ${image.model} at ${image.size}, exported ${image.exportSize}, and applied Stage 4c footer from ${footerOverlay.footerSource}.`,
     };
   }
 
   const svg = renderPostSvg(data, template);
+  const rawSvgBuffer = Buffer.from(svg, 'utf8');
+  const sharp = (await import('sharp')).default;
+  const rawImagePath = await writeRunBinaryArtifact(runId, 'post_raw.png', await sharp(rawSvgBuffer).png().toBuffer());
+  const filename = 'post.png';
+  const imagePath = path.join(getRunDir(runId), filename);
+  const { result: footerOverlay } = await overlayFooterForRun(runId, rawImagePath, imagePath);
   logStageUsage('stage_4_image', runId, { model: 'local-svg-fallback' });
   await appendRunArtifact(
     runId,
@@ -851,15 +907,17 @@ async function createPostImageArtifact(
       timestamp: now(),
       model: 'local-svg-fallback',
       size: 'local-svg',
-      output_format: 'svg',
+      output_format: 'png',
+      raw_filename: 'post_raw.png',
+      final_filename: filename,
     })}\n`
   );
   return {
-    imagePath: await writeRunArtifact(runId, 'post.svg', svg),
-    filename: 'post.svg',
-    mimeType: 'image/svg+xml',
+    imagePath,
+    filename,
+    mimeType: 'image/png',
     model: 'local-svg-fallback',
-    logMessage: 'Rendered local SVG fallback because OPENAI_API_KEY is not configured.',
+    logMessage: `Rendered local SVG fallback because OPENAI_API_KEY is not configured; Stage 4c applied footer from ${footerOverlay.footerSource}.`,
   };
 }
 

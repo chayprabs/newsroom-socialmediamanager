@@ -8,6 +8,7 @@ type RouteContext = {
 };
 
 function contentTypeForFile(filename: string) {
+  if (filename.endsWith('.png')) return 'image/png';
   if (filename.endsWith('.json')) return 'application/json; charset=utf-8';
   return 'text/plain; charset=utf-8';
 }
@@ -20,9 +21,10 @@ export async function GET(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: 'Invalid debug filename.' }, { status: 400 });
   }
 
-  const debugDir = path.join(getRunDir(id), 'debug');
-  const filePath = path.join(debugDir, safeName);
-  const resolvedDir = path.resolve(debugDir);
+  const runDir = getRunDir(id);
+  const debugDir = path.join(runDir, 'debug');
+  const filePath = safeName === 'post_raw.png' ? path.join(runDir, safeName) : path.join(debugDir, safeName);
+  const resolvedDir = path.resolve(safeName === 'post_raw.png' ? runDir : debugDir);
   const resolvedFile = path.resolve(filePath);
 
   if (!resolvedFile.startsWith(resolvedDir + path.sep)) {
@@ -31,10 +33,11 @@ export async function GET(_request: Request, context: RouteContext) {
 
   try {
     const content = await fs.readFile(resolvedFile);
+    const disposition = safeName.endsWith('.png') ? 'inline' : 'attachment';
     return new NextResponse(new Uint8Array(content), {
       headers: {
         'Content-Type': contentTypeForFile(safeName),
-        'Content-Disposition': `attachment; filename="${safeName}"`,
+        'Content-Disposition': `${disposition}; filename="${safeName}"`,
       },
     });
   } catch (error) {

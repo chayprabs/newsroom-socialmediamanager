@@ -11,6 +11,7 @@ interface UsageLogEntry {
   event: 'sonnet_usage' | 'stage_usage';
   stage: string;
   run_id: string;
+  runId?: string;
   timestamp: string;
   model?: string;
   stop_reason?: string;
@@ -18,6 +19,9 @@ interface UsageLogEntry {
   output_tokens: number;
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+  durationMs?: number;
+  footerSource?: string;
+  success?: boolean;
 }
 
 function numeric(value: unknown) {
@@ -50,7 +54,12 @@ function sumStage2(stages: UsageStageSummary[]): UsageStageSummary | undefined {
 }
 
 function sumStage4(stages: UsageStageSummary[]): UsageStageSummary | undefined {
-  const matching = stages.filter((stage) => stage.stage === 'stage_4_prompt_build' || stage.stage === 'stage_4_image');
+  const matching = stages.filter(
+    (stage) =>
+      stage.stage === 'stage_4_prompt_build' ||
+      stage.stage === 'stage_4_image' ||
+      stage.stage === 'stage_4c_footer_overlay'
+  );
 
   if (!matching.length) {
     return undefined;
@@ -115,6 +124,8 @@ export function writeSonnetUsageSummary(runId: string): UsageSummary {
   const stages = Array.from(byStage.values()).sort((a, b) => a.stage.localeCompare(b.stage));
   const stage2Total = sumStage2(stages);
   const stage4Total = sumStage4(stages);
+  const stage4cEntries = entries.filter((entry) => entry.stage === 'stage_4c_footer_overlay');
+  const stage4cDurationMs = stage4cEntries.reduce((total, entry) => total + numeric(entry.durationMs), 0);
   const summary: UsageSummary = {
     run_id: runId,
     generated_at: new Date().toISOString(),
@@ -125,6 +136,7 @@ export function writeSonnetUsageSummary(runId: string): UsageSummary {
     total_sonnet_calls: stages.reduce((total, stage) => total + stage.sonnet_calls, 0),
     ...(stage2Total ? { stage_2_total: stage2Total } : {}),
     ...(stage4Total ? { stage_4_total: stage4Total } : {}),
+    ...(stage4cEntries.length > 0 ? { stage_4c_duration_ms: stage4cDurationMs } : {}),
     by_stage: stages,
   };
 
@@ -176,11 +188,16 @@ export function logSonnetUsage(stage: string, runId: string, response: Anthropic
   );
 }
 
-export function logStageUsage(stage: string, runId: string, details: { model?: string } = {}): void {
+export function logStageUsage(
+  stage: string,
+  runId: string,
+  details: { model?: string; durationMs?: number; footerSource?: string; success?: boolean } = {}
+): void {
   const entry: UsageLogEntry = {
     event: 'stage_usage',
     stage,
     run_id: runId,
+    runId,
     timestamp: new Date().toISOString(),
     model: details.model,
     input_tokens: 0,
@@ -188,6 +205,16 @@ export function logStageUsage(stage: string, runId: string, details: { model?: s
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
   };
+
+  if (typeof details.durationMs === 'number') {
+    entry.durationMs = details.durationMs;
+  }
+  if (details.footerSource) {
+    entry.footerSource = details.footerSource;
+  }
+  if (typeof details.success === 'boolean') {
+    entry.success = details.success;
+  }
 
   fs.mkdirSync(getRunDir(runId), { recursive: true });
   fs.appendFileSync(getPipelineLogPath(runId), `${JSON.stringify(entry)}\n`, 'utf8');

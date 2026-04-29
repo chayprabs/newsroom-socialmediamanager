@@ -27,9 +27,11 @@ const createdRuns: string[] = [];
 
 const COMPLIANT_PROMPT = `Create a portrait social media post using the full available portrait canvas.
 BACKGROUND: Solid lavender, exact hex #E8E6F5, full bleed, edge to edge.
-HEADLINE: heavy-weight sans-serif, color #111111, ~58pt — do not crop or cut off any part of the headline.
+HEADLINE: heavy-weight sans-serif, color #111111, ~58pt - do not crop or cut off any part of the headline.
 BARS: solid #6B5BD9.
-FOOTER: "Data from:" 13pt #666666, small hexagonal cube logo #333333, "Data from: Crustdata".
+EMPTY FOOTER ZONE (bottom 12% of canvas):
+The bottom 12% of the canvas (approximately the bottom 184px) MUST be empty lavender background.
+Do NOT render "Data from:" text. Do NOT render any Crustdata logo or wordmark.
 Do NOT use rounded bar ends.`;
 
 const INVALID_PROMPT = 'A short prompt with no canvas, no background, no footer, no do-not-crop, no hex colors.';
@@ -182,7 +184,9 @@ describe('buildImagePrompt validation flow', () => {
 
     expect(validationResult.template_used).toBe('ranked_horizontal_bar');
     expect(validationResult.total_attempts).toBe(1);
-    expect(validationResult.final).toEqual({ valid: true, missing: [], warnings: [] });
+    expect(validationResult.final?.valid).toBe(true);
+    expect(validationResult.final?.missing).toEqual([]);
+    expect(validationResult.final?.warnings.length).toBeGreaterThan(0);
     expect(validationResult.attempt_history).toHaveLength(1);
     expect(validationResult.attempt_history[0].attempt).toBe(1);
     expect(validationResult.attempt_history[0].valid).toBe(true);
