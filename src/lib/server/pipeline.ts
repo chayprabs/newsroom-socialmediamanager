@@ -18,13 +18,18 @@ import {
   buildScoreCandidatesPrompt,
   isScoredCandidate,
   scoreTotal,
+  type ScoreCandidatesResponse,
   type ScoredCandidate,
 } from '../pipeline/scoreCandidates';
 import {
+  buildDiversityWarning,
   buildReframeCandidatesPrompt,
   isReframedCandidate,
+  STAGE_2_DIVERSITY_RULE,
+  type ReframeCandidatesResponse,
   type ReframedCandidate,
 } from '../pipeline/reframeCandidates';
+import { getRecentTemplates, recordTemplateUsed } from '../pipeline/templateHistory';
 import {
   buildImagePrompt,
   ImagePromptTooLongError,
@@ -69,9 +74,23 @@ type CandidateForValidation = Omit<Partial<CandidateSpec>, 'crustdata_query'> & 
 
 type RuntimeKnowledgeFile = 'base' | 'design';
 type RuntimeKnowledge = Partial<Record<RuntimeKnowledgeFile, string>>;
+type AnthropicTool = NonNullable<AnthropicCallOptions['tools']>[number];
+type DiscoveryCandidatesResponse = {
+  candidates?: unknown[];
+};
+type GeneratedPostToolInput = {
+  data?: GeneratedPostData;
+  caption?: string;
+  hook?: string;
+  key_data_point?: string;
+};
 
 const FEASIBILITY_LOG_FILENAME = 'pipeline.log';
 const MAX_DISCOVERY_CANDIDATES = 10;
+const DISCOVERY_CANDIDATES_TOOL_NAME = 'submit_discovery_candidates';
+const SCORE_CANDIDATES_TOOL_NAME = 'submit_candidate_scores';
+const REFRAME_CANDIDATES_TOOL_NAME = 'submit_reframed_candidates';
+const GENERATED_POST_TOOL_NAME = 'submit_generated_post';
 const ALLOWED_VISUAL_TEMPLATES = new Set([
   'ranked_horizontal_bar',
   'ranked_horizontal_bar_with_icons',
@@ -79,6 +98,13 @@ const ALLOWED_VISUAL_TEMPLATES = new Set([
   'single_line_timeseries',
   'annotated_line_timeseries',
   'event_effect_multi_panel_line',
+  'diverging_horizontal_bar',
+  'multi_line_timeseries',
+  'single_line_timeseries_with_annotations',
+  'stacked_horizontal_bar',
+  'donut_chart',
+  'slope_chart',
+  'scatter_plot',
 ]);
 const STATIC_PROJECT_CONTEXT = `Newsroom is Crustdata's internal pipeline for turning live tech/startup trend signals into API-backed data posts.
 Use the cached knowledge files as the source of truth for editorial fit, topic scope, voice, visual conventions, and pipeline constraints.
@@ -225,6 +251,503 @@ function asStringArray(value: unknown) {
   return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : null;
 }
 
+function stage2ScoresSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      api_feasibility: { type: 'number' },
+      recency: { type: 'number' },
+      archetype_fit: { type: 'number' },
+      visual_potential: { type: 'number' },
+      engagement_likelihood: { type: 'number' },
+      total: { type: 'number' },
+    },
+    required: [
+      'api_feasibility',
+      'recency',
+      'archetype_fit',
+      'visual_potential',
+      'engagement_likelihood',
+      'total',
+    ],
+  };
+}
+
+function discoveryCandidatesTool(): AnthropicTool[] {
+  return [
+    {
+      name: DISCOVERY_CANDIDATES_TOOL_NAME,
+      description: 'Submit Crustdata-ready fallback trend candidates when Grok discovery is unavailable.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          candidates: {
+            type: 'array',
+            maxItems: MAX_DISCOVERY_CANDIDATES,
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: 'Stable candidate id such as c_01.' },
+                text: { type: 'string', description: 'Concise trend text.' },
+                source_url: { type: 'string', description: 'Source URL if known, otherwise an empty string.' },
+                engagement: {
+                  type: 'object',
+                  properties: {
+                    likes: { type: 'number' },
+                    reposts: { type: 'number' },
+                    replies: { type: 'number' },
+                  },
+                  required: ['likes', 'reposts', 'replies'],
+                },
+                entities: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Companies, people, or topics mentioned by the candidate.',
+                },
+              },
+              required: ['id', 'text', 'source_url', 'engagement', 'entities'],
+            },
+          },
+        },
+        required: ['candidates'],
+      },
+    },
+  ];
+}
+
+function scoreCandidatesTool(): AnthropicTool[] {
+  return [
+    {
+      name: SCORE_CANDIDATES_TOOL_NAME,
+      description: 'Submit the scored Stage 2 candidate feasibility pass.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          scored_candidates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                candidate_id: { type: 'string' },
+                feasible: { type: 'boolean' },
+                reason: { type: 'string', description: 'Short feasibility reason, 12 words or fewer.' },
+                source: { type: 'string' },
+                source_url: { type: 'string' },
+                scores: stage2ScoresSchema(),
+                matched_archetype: { type: 'string' },
+                matched_angle: { type: 'string' },
+                matched_visual: { type: 'string' },
+              },
+              required: [
+                'candidate_id',
+                'feasible',
+                'reason',
+                'source',
+                'source_url',
+                'scores',
+                'matched_archetype',
+                'matched_angle',
+                'matched_visual',
+              ],
+            },
+          },
+        },
+        required: ['scored_candidates'],
+      },
+    },
+  ];
+}
+
+export function reframeCandidatesTool(): AnthropicTool[] {
+  return [
+    {
+      name: REFRAME_CANDIDATES_TOOL_NAME,
+      description: 'Submit fully reframed Crustdata query specs for feasible candidates.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          candidates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                candidate_id: { type: 'string' },
+                feasible: { type: 'boolean' },
+                reason: { type: 'string' },
+                headline: { type: 'string' },
+                subhead: { type: 'string' },
+                source: { type: 'string' },
+                source_url: { type: 'string' },
+                scores: stage2ScoresSchema(),
+                matched_archetype: { type: 'string' },
+                matched_angle: { type: 'string' },
+                matched_visual: { type: 'string' },
+                rationale: { type: 'string' },
+                crustdata_query: {
+                  type: 'object',
+                  properties: {
+                    endpoint: { type: 'string' },
+                    intent: { type: 'string' },
+                    params: {
+                      type: 'object',
+                      additionalProperties: true,
+                    },
+                  },
+                  required: ['endpoint', 'intent', 'params'],
+                },
+                visual_template: {
+                  type: 'string',
+                  enum: Array.from(ALLOWED_VISUAL_TEMPLATES),
+                },
+                expected_data_shape: { type: 'string' },
+              },
+              required: ['candidate_id', 'feasible', 'reason'],
+            },
+          },
+          template_diversity_check: {
+            type: 'object',
+            description:
+              'Self-reported diversity check for the surfaced top-3 candidates. Forces the model to explicitly account for visual variety instead of leaving it implicit in the prompt.',
+            properties: {
+              distinct_templates_in_top_3: {
+                type: 'integer',
+                minimum: 0,
+                maximum: 3,
+                description:
+                  'Number of distinct visual_template values across feasible candidates in the top 3 you submitted.',
+              },
+              recent_templates_avoided: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Templates from the recent-runs list (in the user message) that you intentionally did NOT pick this run.',
+              },
+              diversity_rationale: {
+                type: 'string',
+                description: 'Short sentence explaining how this top-3 set provides visual variety.',
+              },
+            },
+            required: ['distinct_templates_in_top_3', 'diversity_rationale'],
+          },
+        },
+        required: ['candidates', 'template_diversity_check'],
+      },
+    },
+  ];
+}
+
+export function generatedPostDataSchema(): Record<string, unknown> {
+  const numericDatumSchema = {
+    type: 'object',
+    properties: {
+      label: { type: 'string' },
+      entity: { type: 'string' },
+      date: { type: 'string' },
+      value: { type: 'number' },
+      color: { type: 'string', description: 'Hex color such as #6B5BD9.' },
+      brand_color_hex: { type: 'string', description: 'Hex color such as #6B5BD9.' },
+      count: { type: 'number' },
+      total: { type: 'number' },
+      percent: { type: 'number' },
+      x: { type: 'number' },
+      y: { type: 'number' },
+    },
+    required: ['value'],
+  };
+
+  return {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Post title shown on the image.' },
+      subtitle: { type: 'string', description: 'Post subtitle shown on the image.' },
+      rows: {
+        type: 'array',
+        items: numericDatumSchema,
+        description:
+          'Bar-style rows for ranked_horizontal_bar, ranked_horizontal_bar_with_icons, vertical_bar_comparison, and diverging_horizontal_bar. Use label + value; signed values are allowed for diverging bars.',
+      },
+      points: {
+        type: 'array',
+        items: numericDatumSchema,
+        description:
+          'Time-series points for single_line_timeseries and single_line_timeseries_with_annotations. Use date + value.',
+      },
+      entities: {
+        type: 'array',
+        description:
+          'Entity series for multi_line_timeseries, slope_chart, and scatter_plot. Use points for multi-line; start_value/end_value for slope; x/y for scatter.',
+        items: {
+          type: 'object',
+          properties: {
+            entity: { type: 'string' },
+            color: { type: 'string', description: 'Hex color such as #6B5BD9.' },
+            brand_color_hex: { type: 'string', description: 'Hex color such as #6B5BD9.' },
+            points: { type: 'array', items: numericDatumSchema },
+            start_value: { type: 'number' },
+            end_value: { type: 'number' },
+            x: { type: 'number' },
+            y: { type: 'number' },
+          },
+          required: ['entity'],
+        },
+      },
+      segments: {
+        type: 'array',
+        description: 'Composition/distribution segments for stacked_horizontal_bar and donut_chart.',
+        items: {
+          type: 'object',
+          properties: {
+            label: { type: 'string' },
+            value: { type: 'number' },
+            color: { type: 'string', description: 'Hex color such as #6B5BD9.' },
+            count: { type: 'number' },
+            percent: { type: 'number' },
+            icon: { type: 'string' },
+            flag_or_logo: { type: 'string' },
+          },
+          required: ['label', 'value'],
+        },
+      },
+      annotations: {
+        type: 'array',
+        description: 'Event annotations for annotated line templates.',
+        items: {
+          type: 'object',
+          properties: {
+            date: { type: 'string' },
+            label: { type: 'string' },
+            sublabel: { type: 'string' },
+            value: { type: 'number' },
+          },
+          required: ['date', 'label'],
+        },
+      },
+      unit_label: { type: 'string' },
+      y_axis_title: { type: 'string' },
+      x_axis_label: { type: 'string' },
+      y_axis_label: { type: 'string' },
+      start_time_label: { type: 'string' },
+      end_time_label: { type: 'string' },
+      total_annotation: { type: 'string' },
+      donut_hole_total: { type: ['number', 'string'] },
+      donut_hole_label: { type: 'string' },
+      footer: { type: 'string', description: 'Data attribution, usually Data from: Crustdata.' },
+      source_metadata: {
+        type: 'object',
+        additionalProperties: true,
+      },
+    },
+    required: ['title', 'subtitle', 'footer'],
+  };
+}
+
+function generatedPostTool(description: string): AnthropicTool[] {
+  return [
+    {
+      name: GENERATED_POST_TOOL_NAME,
+      description,
+      input_schema: {
+        type: 'object',
+        properties: {
+          data: generatedPostDataSchema(),
+          caption: {
+            type: 'string',
+            description:
+              "The caption text. 2-3 sentences. Matches Crustdata's voice: confident, data-driven, mildly contrarian.",
+          },
+          hook: {
+            type: 'string',
+            description: 'A short opening line, one sentence, that draws the reader in.',
+          },
+          key_data_point: {
+            type: 'string',
+            description: 'The single most striking data point from the chart, expressed in one short sentence.',
+          },
+        },
+        required: ['data', 'caption', 'hook', 'key_data_point'],
+      },
+    },
+  ];
+}
+
+function safeStageName(stage: string) {
+  return stage.replace(/[^a-z0-9_-]/gi, '_');
+}
+
+async function writeAnthropicToolFailure(
+  stage: string,
+  runId: string,
+  response: AnthropicResponse,
+  reason: string
+) {
+  try {
+    const dir = path.join(getRunDir(runId), 'debug');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, `${safeStageName(stage)}_failure.json`),
+      JSON.stringify(
+        {
+          stage,
+          timestamp: now(),
+          failure_reason: reason,
+          stop_reason: response.stop_reason,
+          usage: response.usage,
+          response,
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch (error) {
+    console.error(
+      `[tool-diagnostics] failed to write debug bundle for run=${runId} stage=${stage}: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+}
+
+async function throwAnthropicToolFailure(
+  stage: string,
+  runId: string,
+  response: AnthropicResponse,
+  reason: string
+): Promise<never> {
+  await writeAnthropicToolFailure(stage, runId, response, reason);
+  throw new Error(reason);
+}
+
+async function getRequiredToolInput<T>(
+  stage: string,
+  runId: string,
+  response: AnthropicResponse,
+  toolName: string
+): Promise<T> {
+  const toolUse = response.content?.find((part) => part.type === 'tool_use' && part.name === toolName);
+  const input = toolUse?.input;
+
+  if (!isRecord(input)) {
+    return throwAnthropicToolFailure(stage, runId, response, `${stage}: expected ${toolName} tool_use block.`);
+  }
+
+  return input as T;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isChartDatum(value: unknown, requireLabel = false, requireDate = false) {
+  if (!isRecord(value)) return false;
+  if (!isFiniteNumber(value.value)) return false;
+  if (requireLabel && (typeof value.label !== 'string' || !value.label.trim())) return false;
+  if (requireDate && (typeof value.date !== 'string' || !value.date.trim())) return false;
+  return true;
+}
+
+function isChartSegment(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.label === 'string' &&
+    value.label.trim().length > 0 &&
+    isFiniteNumber(value.value)
+  );
+}
+
+function isChartAnnotation(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.date === 'string' &&
+    value.date.trim().length > 0 &&
+    typeof value.label === 'string' &&
+    value.label.trim().length > 0
+  );
+}
+
+function isChartEntitySeries(value: unknown) {
+  if (!isRecord(value)) return false;
+  if (typeof value.entity !== 'string' || !value.entity.trim()) return false;
+
+  const hasPoints =
+    Array.isArray(value.points) &&
+    value.points.length > 0 &&
+    value.points.every((point) => isChartDatum(point, false, true));
+  const hasSlope = isFiniteNumber(value.start_value) && isFiniteNumber(value.end_value);
+  const hasScatter = isFiniteNumber(value.x) && isFiniteNumber(value.y);
+
+  return hasPoints || hasSlope || hasScatter;
+}
+
+export function isGeneratedPostData(value: unknown): value is GeneratedPostData {
+  if (!isRecord(value)) return false;
+  if (typeof value.title !== 'string' || !value.title.trim()) return false;
+  if (typeof value.subtitle !== 'string') return false;
+  if (typeof value.footer !== 'string' || !value.footer.trim()) return false;
+
+  const hasRows =
+    Array.isArray(value.rows) &&
+    value.rows.length > 0 &&
+    value.rows.every((row) => isChartDatum(row, true));
+  const hasPoints =
+    Array.isArray(value.points) &&
+    value.points.length > 0 &&
+    value.points.every((point) => isChartDatum(point, false, true));
+  const hasEntities =
+    Array.isArray(value.entities) &&
+    value.entities.length > 0 &&
+    value.entities.every(isChartEntitySeries);
+  const hasSegments =
+    Array.isArray(value.segments) &&
+    value.segments.length > 0 &&
+    value.segments.every(isChartSegment);
+  const annotationsOk =
+    !Array.isArray(value.annotations) || value.annotations.every(isChartAnnotation);
+
+  return annotationsOk && (hasRows || hasPoints || hasEntities || hasSegments);
+}
+
+async function getGeneratedPostToolInput(
+  stage: string,
+  runId: string,
+  response: AnthropicResponse
+): Promise<{ data: GeneratedPostData; caption: string; hook: string; key_data_point: string }> {
+  const input = await getRequiredToolInput<GeneratedPostToolInput>(
+    stage,
+    runId,
+    response,
+    GENERATED_POST_TOOL_NAME
+  );
+  const caption = typeof input.caption === 'string' ? input.caption.trim() : '';
+  const hook = typeof input.hook === 'string' ? input.hook.trim() : '';
+  const keyDataPoint = typeof input.key_data_point === 'string' ? input.key_data_point.trim() : '';
+
+  if (!isGeneratedPostData(input.data)) {
+    return throwAnthropicToolFailure(
+      stage,
+      runId,
+      response,
+      `${stage}: ${GENERATED_POST_TOOL_NAME}.data did not include valid chart-ready data. Include rows, points, entities, or segments for the selected visual_template.`
+    );
+  }
+
+  if (!caption) {
+    return throwAnthropicToolFailure(
+      stage,
+      runId,
+      response,
+      `${stage}: ${GENERATED_POST_TOOL_NAME}.caption was empty.`
+    );
+  }
+
+  return {
+    data: input.data,
+    caption,
+    hook,
+    key_data_point: keyDataPoint,
+  };
+}
+
 function isKnownFieldPath(field: string, fields?: readonly string[], groups?: readonly string[]) {
   if (fields?.includes(field)) return true;
   return Boolean(groups?.some((group) => field === group || field.startsWith(`${group}.`)));
@@ -261,6 +784,59 @@ function validateVisualTemplate(candidateSpec: CandidateForValidation) {
   }
 
   return null;
+}
+
+function inferSupportedIntent(
+  capability: CrustdataEndpointCapability,
+  intent: string,
+  params: Record<string, unknown>
+) {
+  const trimmed = intent.trim();
+  if (capability.supported_intents.includes(trimmed)) return trimmed;
+
+  const text = trimmed.toLowerCase();
+  const supports = (value: string) => capability.supported_intents.includes(value);
+  const pick = (...values: string[]) => values.find((value) => supports(value));
+
+  if (capability.endpoint === '/job/search') {
+    if ('aggregations' in params) return pick('job_aggregation', 'job_count', 'hiring_analysis');
+    if (/\bhir(e|ing|es)\b/.test(text)) return pick('hiring_analysis');
+    if (/\brole|demand|function|category\b/.test(text)) return pick('role_demand');
+    if (/\bcount|total\b/.test(text)) return pick('job_count');
+    return pick('job_search');
+  }
+
+  if (capability.endpoint === '/company/enrich') {
+    if (/\btraffic|visits?|web\b/.test(text)) return pick('web_traffic_analysis');
+    if (/\bheadcount|employee|employees|growth\b/.test(text)) return pick('headcount_analysis');
+    if (/\bhir(e|ing|es)|jobs?\b/.test(text)) return pick('hiring_analysis');
+    if (/\bfund|funding|raised|valuation|investor\b/.test(text)) return pick('funding_analysis');
+    if (/\brevenue|arr\b/.test(text)) return pick('revenue_analysis');
+    if (/\bfounder|people|person|alumni|employee\b/.test(text)) return pick('founder_or_people_lookup');
+    return pick('company_enrich');
+  }
+
+  if (capability.endpoint === '/company/search') {
+    if (/\bcountry|geograph|location|region\b/.test(text)) return pick('company_geography');
+    if (/\bfund|funding|raised|valuation|investor\b/.test(text)) return pick('funding_analysis');
+    if (/\bheadcount|employee|employees|growth\b/.test(text)) return pick('headcount_analysis');
+    if (/\brank|top|largest|fastest|compare\b/.test(text)) return pick('company_ranking');
+    if (/\bcount|total\b/.test(text)) return pick('company_count');
+    if (/\bsegment|cohort|category|distribution\b/.test(text)) return pick('company_segment');
+    return pick('company_search');
+  }
+
+  if (capability.endpoint === '/person/search') {
+    if (/\bfounder\b/.test(text)) return pick('founder_analysis');
+    if (/\balumni|former|ex[-\s]?employee\b/.test(text)) return pick('alumni_analysis');
+    if (/\bcount|total\b/.test(text)) return pick('people_count');
+    if (/\brole|title|skill|education|location\b/.test(text)) {
+      return pick('talent_analysis', 'role_analysis', 'person_search');
+    }
+    return pick('person_search');
+  }
+
+  return undefined;
 }
 
 function countFilterConditions(value: unknown): number {
@@ -612,7 +1188,8 @@ export function validateFeasibility(candidateSpec: CandidateForValidation): Feas
     };
   }
 
-  if (!capability.supported_intents.includes(intent)) {
+  const normalizedIntent = inferSupportedIntent(capability, intent, isRecord(candidateSpec.crustdata_query?.params) ? candidateSpec.crustdata_query.params : {});
+  if (!normalizedIntent) {
     return {
       feasible: false,
       reason: `Intent "${intent}" does not map to ${normalizedEndpoint}; supported intents are ${capability.supported_intents.join(
@@ -644,7 +1221,10 @@ export function validateFeasibility(candidateSpec: CandidateForValidation): Feas
 
   return {
     feasible: true,
-    reason: `Mapped to ${normalizedEndpoint} (${intent}) in the audited Crustdata registry.`,
+    reason:
+      normalizedIntent === intent
+        ? `Mapped to ${normalizedEndpoint} (${normalizedIntent}) in the audited Crustdata registry.`
+        : `Mapped to ${normalizedEndpoint} (${normalizedIntent}) in the audited Crustdata registry; normalized verbose intent "${intent}".`,
     mapped_endpoints: [normalizedEndpoint],
   };
 }
@@ -747,6 +1327,12 @@ function normalizeValidatedCandidate(
   const scoredCandidate = scoredById.get(candidateId);
   const rawEndpoint = candidate.crustdata_query?.endpoint || '';
   const endpoint = rawEndpoint.trim() ? normalizeCrustdataEndpoint(rawEndpoint) : '';
+  const params = stripNonApiHelperParams(candidate.crustdata_query?.params || {});
+  const capability = endpoint ? getEndpointCapability(endpoint) : undefined;
+  const intent =
+    capability && typeof candidate.crustdata_query?.intent === 'string'
+      ? inferSupportedIntent(capability, candidate.crustdata_query.intent, params) || candidate.crustdata_query.intent
+      : candidate.crustdata_query?.intent;
 
   const normalized: CandidateSpec & CandidateForValidation = {
     candidate_id: candidateId,
@@ -764,8 +1350,8 @@ function normalizeValidatedCandidate(
     rationale: candidate.rationale,
     crustdata_query: {
       endpoint,
-      intent: candidate.crustdata_query?.intent,
-      params: stripNonApiHelperParams(candidate.crustdata_query?.params || {}),
+      intent,
+      params,
     },
     visual_template: candidate.visual_template || candidate.matched_visual || scoredCandidate?.matched_visual || '',
     expected_data_shape: candidate.expected_data_shape,
@@ -1083,9 +1669,8 @@ Return JSON with this exact shape:
 }`;
 
     run = await appendLog(run, 'Querying Grok for candidate trends.');
-    let grokResponse: string;
-    let candidateResponse: AnthropicResponse | undefined;
-    let candidateParseStage = 'stage_1_grok_candidates';
+    let grokResponse = '';
+    let rawCandidates: DiscoveryCandidatesResponse | undefined;
     let discoverySource = 'Grok';
     try {
       grokResponse = await callGrok(grokCandidatePrompt);
@@ -1093,7 +1678,6 @@ Return JSON with this exact shape:
       const message = error instanceof Error ? error.message : String(error);
       run = await appendLog(run, `Grok discovery failed (${message}). Falling back to Claude candidate generation.`);
       discoverySource = 'Claude fallback';
-      candidateParseStage = 'stage_1_discovery_fallback';
       const fallbackResponse = await callLoggedAnthropicFull(
         'stage_1_discovery_fallback',
         runId,
@@ -1110,37 +1694,32 @@ Use only these endpoint-backed shapes:
 - /person/search founder, alumni, employer, title, role, skills, education, and location patterns.
 
 Do not include ideas requiring sentiment, comments, /web/search/live, professional-network live endpoints, or unknown APIs.
-
-Return JSON with this exact shape:
-{
-  "candidates": [
-    {
-      "id": "c_01",
-      "text": "trend text",
-      "source_url": "",
-      "engagement": { "likes": 0, "reposts": 0, "replies": 0 },
-      "entities": ["company or topic"]
-    }
-  ]
-}`,
+Submit the candidates through the submit_discovery_candidates tool.`,
         {
           system: cachedRuntimeSystem(
             baseKnowledge,
             ['base'],
             'You are Stage 1 fallback for Newsroom: produce conservative Crustdata API-ready candidate ideas when Grok is unavailable.'
           ),
+          tools: discoveryCandidatesTool(),
+          toolChoice: { type: 'tool', name: DISCOVERY_CANDIDATES_TOOL_NAME },
         }
       );
-      grokResponse = fallbackResponse.text;
-      candidateResponse = fallbackResponse.response;
+      rawCandidates = await getRequiredToolInput<DiscoveryCandidatesResponse>(
+        'stage_1_discovery_fallback',
+        runId,
+        fallbackResponse.response,
+        DISCOVERY_CANDIDATES_TOOL_NAME
+      );
     }
 
-    const rawCandidates = await extractJsonObjectWithDiagnostics<{ candidates?: unknown[] }>(
-      candidateParseStage,
-      runId,
-      grokResponse,
-      candidateResponse
-    );
+    if (!rawCandidates) {
+      rawCandidates = await extractJsonObjectWithDiagnostics<DiscoveryCandidatesResponse>(
+        'stage_1_grok_candidates',
+        runId,
+        grokResponse
+      );
+    }
     const rawCandidateList = Array.isArray(rawCandidates.candidates)
       ? rawCandidates.candidates.slice(0, MAX_DISCOVERY_CANDIDATES)
       : [];
@@ -1159,17 +1738,19 @@ Return JSON with this exact shape:
         system: cachedRuntimeSystem(
           baseKnowledge,
           ['base'],
-          'You are Stage 2 pass 1 of Newsroom: score all trend candidates and decide initial Crustdata feasibility. Return compact valid JSON only.'
+          'You are Stage 2 pass 1 of Newsroom: score all trend candidates and decide initial Crustdata feasibility.'
         ),
         maxTokens: 4096,
+        tools: scoreCandidatesTool(),
+        toolChoice: { type: 'tool', name: SCORE_CANDIDATES_TOOL_NAME },
       }
     );
 
-    const scored = await extractJsonObjectWithDiagnostics<{ scored_candidates?: unknown[] }>(
+    const scored = await getRequiredToolInput<ScoreCandidatesResponse>(
       'stage_2_score',
       runId,
-      scoredResponse.text,
-      scoredResponse.response
+      scoredResponse.response,
+      SCORE_CANDIDATES_TOOL_NAME
     );
     const scoredCandidates = (Array.isArray(scored.scored_candidates) ? scored.scored_candidates : []).filter(
       isScoredCandidate
@@ -1194,30 +1775,42 @@ Return JSON with this exact shape:
       ...baseKnowledge,
       ...(await readRuntimeKnowledge(['design'])),
     };
+    const recentVisualTemplates = await getRecentTemplates(5);
+    if (recentVisualTemplates.length) {
+      run = await appendLog(
+        run,
+        `Recent visual_template usage (oldest -> newest): ${recentVisualTemplates.join(', ')}.`
+      );
+    }
     run = await appendLog(run, `Reframing top ${topScoredCandidates.length} feasible candidate(s).`);
     const reframeResponse = await callLoggedAnthropicFull(
       'stage_2_reframe',
       runId,
-      buildReframeCandidatesPrompt(topScoredCandidates, formatEndpointCapabilitiesForPrompt()),
+      buildReframeCandidatesPrompt(topScoredCandidates, formatEndpointCapabilitiesForPrompt(), {
+        recentVisualTemplates,
+      }),
       {
         system: cachedRuntimeSystem(
           reframeKnowledge,
           ['base', 'design'],
-          `You are Stage 2 pass 2 of Newsroom: fully reframe only the supplied feasible candidates into deterministic Crustdata query specs. Only use these currently usable endpoints:\n${formatUsableEndpoints()}`
+          `You are Stage 2 pass 2 of Newsroom: fully reframe only the supplied feasible candidates into deterministic Crustdata query specs. Only use these currently usable endpoints:\n${formatUsableEndpoints()}\n\n${STAGE_2_DIVERSITY_RULE}`
         ),
         maxTokens: 4096,
+        tools: reframeCandidatesTool(),
+        toolChoice: { type: 'tool', name: REFRAME_CANDIDATES_TOOL_NAME },
       }
     );
 
-    const reframed = await extractJsonObjectWithDiagnostics<{ candidates?: unknown[] }>(
+    const reframed = await getRequiredToolInput<ReframeCandidatesResponse>(
       'stage_2_reframe',
       runId,
-      reframeResponse.text,
-      reframeResponse.response
+      reframeResponse.response,
+      REFRAME_CANDIDATES_TOOL_NAME
     );
     const reframedCandidates = (Array.isArray(reframed.candidates) ? reframed.candidates : []).filter(
       isReframedCandidate
     );
+    const diversityCheck = reframed.template_diversity_check;
     const reframedCandidateIds = new Set(reframedCandidates.map(getCandidateId).filter(Boolean));
     const validationCandidates: CandidateForValidation[] = [
       ...reframedCandidates,
@@ -1255,13 +1848,81 @@ Return JSON with this exact shape:
       return noMatches(run, 'No candidates passed the Crustdata feasibility validator. Try finding new ideas again.');
     }
 
+    const distinctTemplatesActual = new Set(
+      topCandidates.map((candidate) => candidate.visual_template?.trim()).filter((value): value is string => Boolean(value))
+    ).size;
+    const reportedDistinct =
+      typeof diversityCheck?.distinct_templates_in_top_3 === 'number'
+        ? diversityCheck.distinct_templates_in_top_3
+        : distinctTemplatesActual;
+    const diversityWarning = buildDiversityWarning(distinctTemplatesActual);
+    const templateDiversity: RunState['template_diversity'] = {
+      distinct_templates_in_top_3: distinctTemplatesActual,
+      recent_templates_avoided: Array.isArray(diversityCheck?.recent_templates_avoided)
+        ? diversityCheck.recent_templates_avoided.filter((value): value is string => typeof value === 'string')
+        : [],
+      diversity_rationale:
+        typeof diversityCheck?.diversity_rationale === 'string'
+          ? diversityCheck.diversity_rationale
+          : '',
+      ...(diversityWarning ? { warning: diversityWarning } : {}),
+    };
+    const diversityLogs: RunState['logs'] = [];
+    if (reportedDistinct !== distinctTemplatesActual) {
+      diversityLogs.push({
+        at: now(),
+        message: `Stage 2 diversity self-check mismatch: model reported ${reportedDistinct} distinct templates, actual is ${distinctTemplatesActual}.`,
+      });
+    }
+    if (diversityWarning) {
+      diversityLogs.push({
+        at: now(),
+        message: `Stage 2 diversity warning (soft, non-blocking): ${diversityWarning} Distinct templates in top 3 = ${distinctTemplatesActual}.`,
+      });
+    } else if (templateDiversity.diversity_rationale) {
+      diversityLogs.push({
+        at: now(),
+        message: `Stage 2 diversity OK (${distinctTemplatesActual} distinct templates): ${templateDiversity.diversity_rationale}`,
+      });
+    }
+
+    const topSpecsArtifact = {
+      run_id: runId,
+      generated_at: now(),
+      recent_visual_templates: recentVisualTemplates,
+      template_diversity_check: {
+        distinct_templates_in_top_3: distinctTemplatesActual,
+        reported_distinct_templates_in_top_3: reportedDistinct,
+        recent_templates_avoided: templateDiversity.recent_templates_avoided ?? [],
+        diversity_rationale: templateDiversity.diversity_rationale,
+        warning: templateDiversity.warning,
+      },
+      candidates: topCandidates.map((candidate) => ({
+        candidate_id: candidate.candidate_id,
+        headline: candidate.headline,
+        subhead: candidate.subhead,
+        visual_template: candidate.visual_template,
+        matched_archetype: candidate.matched_archetype,
+        matched_angle: candidate.matched_angle,
+        crustdata_query: candidate.crustdata_query,
+        scores: candidate.scores,
+        rationale: candidate.rationale,
+        expected_data_shape: candidate.expected_data_shape,
+        source: candidate.source,
+        source_url: candidate.source_url,
+      })),
+    };
+    await writeRunArtifact(runId, 'top_3_specs.json', JSON.stringify(topSpecsArtifact, null, 2));
+
     return writeRun({
       ...run,
       status: 'awaiting_selection',
       candidates: topCandidates,
+      template_diversity: templateDiversity,
       logs: [
         ...run.logs,
         ...validationLogs,
+        ...diversityLogs,
         { at: now(), message: `Candidate judging complete. ${topCandidates.length} feasible candidate(s) ready.` },
       ],
     });
@@ -1333,33 +1994,40 @@ ${JSON.stringify(selectedCandidate, null, 2)}
 Raw Crustdata response:
 ${JSON.stringify(rawData, null, 2)}
 
-Return JSON:
-{
-  "data": {
-    "title": "post title",
-    "subtitle": "post subtitle",
-    "rows": [{ "label": "label", "value": 0, "color": "#111111" }],
-    "footer": "Data from: Crustdata",
-    "source_metadata": { "endpoint": "endpoint hit", "fetched_at": "ISO timestamp" }
-  },
-  "caption": "2-3 sentence caption"
-}`, {
+Normalize the raw response into chart-ready post data and write the social caption.
+
+Requirements:
+- Use only data that is present in the raw Crustdata response.
+- If the original candidate cannot be supported exactly, adjust the title, subtitle, chart data, and caption to what the returned data actually supports.
+- Shape the chart data for the selected visual_template:
+  - ranked_horizontal_bar, ranked_horizontal_bar_with_icons, vertical_bar_comparison, diverging_horizontal_bar: use rows[{label,value,color?}]. Sort ranked rows descending; keep signed values for diverging rows.
+  - single_line_timeseries and annotated_line_timeseries: use points[{date,value}] and optional annotations[{date,label,sublabel?}].
+  - single_line_timeseries_with_annotations: use points[{date,value}] plus annotations[{date,label,sublabel?}].
+  - multi_line_timeseries: use entities[{entity,brand_color_hex?,points[{date,value}]}].
+  - stacked_horizontal_bar and donut_chart: use segments[{label,value,count?,percent?,color?}] plus total_annotation or donut_hole_total/donut_hole_label as appropriate.
+  - slope_chart: use entities[{entity,brand_color_hex?,start_value,end_value}] plus start_time_label and end_time_label.
+  - scatter_plot: use entities[{entity,brand_color_hex?,x,y}] plus x_axis_label and y_axis_label.
+- Include a compact rows summary when it is natural, but do not collapse multi-line, slope, scatter, or segment data into rows only.
+- Keep all numeric series compact and directly renderable by the selected visual template.
+- Use "Data from: Crustdata" as the footer unless the runtime knowledge requires a more specific Crustdata attribution.
+- Write a 2-3 sentence caption in Crustdata's voice with a clear hook and the key data takeaway.
+- Submit the result through the submit_generated_post tool.`, {
       system: cachedRuntimeSystem(
         baseKnowledge,
         ['base'],
         'You are Stage 5 of Newsroom: normalize Crustdata API output into chart-ready post data and a caption.'
       ),
+      maxTokens: 2048,
+      temperature: 0.1,
+      tools: generatedPostTool('Submit chart-ready post data and the caption for the selected Crustdata candidate.'),
+      toolChoice: { type: 'tool', name: GENERATED_POST_TOOL_NAME },
     });
 
-    const shaped = await extractJsonObjectWithDiagnostics<{ data: GeneratedPostData; caption: string }>(
+    const shaped = await getGeneratedPostToolInput(
       'stage_5_caption',
       runId,
-      shapedResponse.text,
       shapedResponse.response
     );
-    if (!shaped.data?.rows?.length) {
-      throw new Error('Finalized data did not include chart rows.');
-    }
 
     await writeRunArtifact(runId, 'data.json', JSON.stringify(shaped.data, null, 2));
     run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
@@ -1405,28 +2073,29 @@ ${JSON.stringify(run.data, null, 2)}
 User edit prompt:
 ${editPrompt}
 
-Return JSON:
-{
-  "data": {
-    "title": "post title",
-    "subtitle": "post subtitle",
-    "rows": [{ "label": "label", "value": 0, "color": "#111111" }],
-    "footer": "Data from: Crustdata",
-    "source_metadata": {}
-  },
-  "caption": "2-3 sentence caption"
-}`, {
+Revise the chart-ready post data and caption according to the user edit.
+
+Requirements:
+- Preserve the existing source_metadata unless the edit requires a correction.
+- Keep the data shape aligned with the selected visual template: rows for bar templates, points for single-line time series, entities for multi-line/slope/scatter, and segments for composition/distribution charts.
+- Keep all numeric series compact and directly renderable by the selected visual template.
+- For ranked comparisons, sort rows descending by value.
+- Write a 2-3 sentence caption in Crustdata's voice with a clear hook and the key data takeaway.
+- Submit the result through the submit_generated_post tool.`, {
       system: cachedRuntimeSystem(
         baseKnowledge,
         ['base'],
         "You are Stage 5 of Newsroom: revise existing chart-ready post data using the user's edit prompt."
       ),
+      maxTokens: 2048,
+      temperature: 0.1,
+      tools: generatedPostTool('Submit revised chart-ready post data and caption for an edited Newsroom post.'),
+      toolChoice: { type: 'tool', name: GENERATED_POST_TOOL_NAME },
     });
 
-    const revised = await extractJsonObjectWithDiagnostics<{ data: GeneratedPostData; caption: string }>(
+    const revised = await getGeneratedPostToolInput(
       'stage_5_regenerate',
       runId,
-      revisedResponse.text,
       revisedResponse.response
     );
     const imageArtifact = await createPostImageArtifact(
@@ -1469,11 +2138,23 @@ export async function saveRun(runId: string) {
     throw new Error('Only ready runs can be saved.');
   }
 
-  return writeRun({
+  const saved = await writeRun({
     ...run,
     status: 'saved',
     saved_at: now(),
     error: undefined,
     logs: [...run.logs, { at: now(), message: 'Run saved.' }],
   });
+
+  const usedTemplate =
+    saved.visual_template?.trim() ||
+    saved.selected_candidate?.visual_template?.trim() ||
+    saved.selected_candidate?.matched_visual?.trim() ||
+    '';
+  if (usedTemplate) {
+    await recordTemplateUsed(runId, usedTemplate);
+    return requireRun(await readRun(runId));
+  }
+
+  return saved;
 }

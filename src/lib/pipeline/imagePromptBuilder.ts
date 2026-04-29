@@ -48,7 +48,7 @@ Your output MUST be a complete prompt based on the matching worked-example skele
 Every prompt you produce MUST contain, verbatim:
 - The exact background hex #E8E6F5 and the phrase "full bleed".
 - The word "portrait" and a clear instruction to use the full available portrait canvas.
-- The exact heading "EMPTY FOOTER ZONE" and an instruction that the bottom 12% of the canvas is empty lavender space.
+- The exact heading "EMPTY FOOTER ZONE" and an instruction that the bottom 18% of the canvas is empty lavender space.
 - The exact phrase "Do NOT render \"Data from:\"" so GPT-image-2 does not attempt the footer.
 - Explicit hex color assignments for every chart element (no "use a nice palette," only literal hex values).
 - The phrase "do not crop or cut off any part of the headline".
@@ -56,9 +56,9 @@ Every prompt you produce MUST contain, verbatim:
 
 Background mode for the GPT-image-2 API call is {{BACKGROUND_MODE}}; the prompt body still must specify the lavender background as a flat solid color, no transparency.
 
-The OpenAI API generation size is {{CANVAS_SIZE}} and the export size is {{EXPORT_SIZE}}, but do not tell GPT-image-2 to design for a centered crop zone or fixed 4:5 frame. The final image export is handled after generation. Tell GPT-image-2 to keep every text block and chart element comfortably inside the top 88% of the visible portrait composition with generous inner margins.
+The OpenAI API generation size is {{CANVAS_SIZE}} and the export size is {{EXPORT_SIZE}}, but do not tell GPT-image-2 to design for a centered crop zone or fixed 4:5 frame. The final image export is handled after generation. Tell GPT-image-2 to keep every text block and chart element comfortably inside the top 82% of the visible portrait composition with generous inner margins.
 
-The bottom 12% of the canvas must be reserved as empty lavender space. Do NOT include any 'Data from:' or 'Crustdata' branding in the prompt — these are added by a separate post-processing step. If you include them, GPT-image-2 will render them and they'll be overwritten with a duplicate, looking bad. Always instruct the image model to leave the footer zone empty.
+The bottom 18% of the canvas must be reserved as empty lavender space. Do NOT include any 'Data from:' or 'Crustdata' branding in the prompt — these are added by a separate post-processing step. If you include them, GPT-image-2 will render them and they'll be overwritten with a duplicate, looking bad. Always instruct the image model to leave the footer zone empty.
 
 The validator will reject prompts missing any required element. Failed validation costs us a full retry, so include every element on the first try.`;
 
@@ -165,7 +165,7 @@ function imagePromptTool() {
           prompt: {
             type: 'string',
             description:
-              'Complete GPT-image-2 prompt, must include all required elements: the exact lavender hex #E8E6F5, the phrase "full bleed", portrait layout language, the EMPTY FOOTER ZONE contract for the bottom 12%, explicit hex color assignments, the do-not-crop-headline phrase, and at least one verbatim do_not rule from design.md.',
+              'Complete GPT-image-2 prompt, must include all required elements: the exact lavender hex #E8E6F5, the phrase "full bleed", portrait layout language, the EMPTY FOOTER ZONE contract for the bottom 18%, explicit hex color assignments, the do-not-crop-headline phrase, and at least one verbatim do_not rule from design.md.',
           },
           template_used: {
             type: 'string',
@@ -194,7 +194,7 @@ ${JSON.stringify(data, null, 2)}
 
 Visual template selected by Stage 2: ${visualTemplate || 'best_matching_template'}
 
-Build the final GPT-image-2 prompt now using the matching worked-example skeleton from design.md (section 8). Substitute only the headline, subtitle, data rows/points, and bar/line color assignments. Every other value is pinned and must appear verbatim. Inline the portrait layout instruction, #E8E6F5, "full bleed", "EMPTY FOOTER ZONE", "Do NOT render \"Data from:\"", "bottom 12%", "do not crop or cut off any part of the headline", and at least one relevant do_not rule transcribed verbatim from design.md section 11. Do not describe a centered safe-area crop or fixed 4:5 export frame; use the full available portrait canvas. Do not ask GPT-image-2 to render the Crustdata footer, logo, or wordmark; Stage 4c composites the real footer after generation.
+Build the final GPT-image-2 prompt now using the matching worked-example skeleton from design.md (section 8). Substitute only the headline, subtitle, data rows/points, and bar/line color assignments. Every other value is pinned and must appear verbatim. Inline the portrait layout instruction, #E8E6F5, "full bleed", "EMPTY FOOTER ZONE", "Do NOT render \"Data from:\"", "bottom 18%", "do not crop or cut off any part of the headline", and at least one relevant do_not rule transcribed verbatim from design.md section 11. Do not describe a centered safe-area crop or fixed 4:5 export frame; use the full available portrait canvas. Do not ask GPT-image-2 to render the Crustdata footer, logo, or wordmark; Stage 4c composites the real footer after generation.
 
 Then call submit_image_prompt with the prompt, the template name, the character count, and the full list of hex colors used.`;
 }

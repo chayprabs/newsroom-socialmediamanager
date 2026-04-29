@@ -15,8 +15,8 @@ const COMPLIANT_PROMPT = `Create a portrait social media post using the full ava
 BACKGROUND: Solid lavender, exact hex ${REQUIRED_BACKGROUND_HEX}, full bleed, edge to edge.
 HEADLINE: heavy-weight sans-serif, color #111111, ~58pt - do not crop or cut off any part of the headline.
 BARS: solid #6B5BD9.
-${REQUIRED_EMPTY_FOOTER_ZONE_TEXT} (bottom 12% of canvas):
-The bottom 12% of the canvas (approximately the bottom 184px) MUST be empty lavender background.
+${REQUIRED_EMPTY_FOOTER_ZONE_TEXT} (bottom 18% of canvas):
+The bottom 18% of the canvas (approximately the bottom 276px) MUST be empty lavender background.
 ${REQUIRED_NO_DATA_FROM_TEXT} text. Do NOT render any Crustdata logo or wordmark.
 Do NOT use rounded bar ends.`;
 
@@ -84,12 +84,12 @@ describe('validateImagePrompt', () => {
 
     it('flags a missing bottom zone height instruction', () => {
       const result = validateImagePrompt(
-        COMPLIANT_PROMPT.replaceAll('bottom 12%', 'lower area').replaceAll('bottom 184px', 'lower pixels')
+        COMPLIANT_PROMPT.replaceAll('bottom 18%', 'lower area').replaceAll('bottom 276px', 'lower pixels')
       );
 
       expect(result.valid).toBe(false);
       if (!result.valid) {
-        expect(result.missing.some((m) => m.includes('bottom 12% or bottom 184px'))).toBe(true);
+        expect(result.missing.some((m) => m.includes('bottom 18% or bottom 276px'))).toBe(true);
       }
     });
 
@@ -114,7 +114,7 @@ describe('validateImagePrompt', () => {
     });
 
     it('flags fewer than 3 distinct hex colors', () => {
-      const sparsePrompt = `portrait ${REQUIRED_BACKGROUND_HEX} full bleed ${REQUIRED_EMPTY_FOOTER_ZONE_TEXT} ${REQUIRED_NO_DATA_FROM_TEXT} bottom 12% do not crop #111111`;
+      const sparsePrompt = `portrait ${REQUIRED_BACKGROUND_HEX} full bleed ${REQUIRED_EMPTY_FOOTER_ZONE_TEXT} ${REQUIRED_NO_DATA_FROM_TEXT} bottom 18% do not crop #111111`;
 
       const result = validateImagePrompt(sparsePrompt);
 

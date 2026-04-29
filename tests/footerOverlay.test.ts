@@ -26,6 +26,14 @@ async function makeRawImage(filePath: string) {
     .toFile(filePath);
 }
 
+async function makeRawImageWithFooterLeak(filePath: string) {
+  const leakSvg = `<svg width="1080" height="1350" viewBox="0 0 1080 1350" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1080" height="1350" fill="#E8E6F5"/>
+    <rect x="0" y="1220" width="1080" height="130" fill="#B42318"/>
+  </svg>`;
+  await sharp(Buffer.from(leakSvg)).png().toFile(filePath);
+}
+
 async function makeFooterAsset(filePath: string) {
   const svg = `<svg width="1080" height="130" viewBox="0 0 1080 130" xmlns="http://www.w3.org/2000/svg">
     <rect width="1080" height="130" fill="transparent"/>
@@ -58,6 +66,7 @@ describe('applyFooterOverlay', () => {
     expect(metadata.width).toBe(1080);
     expect(metadata.height).toBe(1350);
     expect(result.footerSource).toBe('asset');
+    expect(result.appliedAt.y + result.appliedAt.height).toBe(1350);
     expect(result.warnings).toEqual([]);
   });
 
@@ -107,5 +116,26 @@ describe('applyFooterOverlay', () => {
     expect(metadata.width).toBe(800);
     expect(metadata.height).toBe(1000);
     expect(result.appliedAt).toMatchObject({ x: 0, width: 800 });
+    expect(result.appliedAt.y + result.appliedAt.height).toBe(1000);
+  });
+
+  it('clears leaked raw-image content behind the deterministic footer band', async () => {
+    const dir = await makeTempDir();
+    const rawPath = path.join(dir, 'raw.png');
+    const outputPath = path.join(dir, 'post.png');
+    const footerPath = path.join(dir, 'footer.png');
+    await makeRawImageWithFooterLeak(rawPath);
+    await makeFooterAsset(footerPath);
+
+    await applyFooterOverlay(rawPath, outputPath, {
+      footerAssetPath: footerPath,
+      exportSize: '1080x1350',
+    });
+    const pixel = await sharp(outputPath)
+      .extract({ left: 10, top: 1340, width: 1, height: 1 })
+      .raw()
+      .toBuffer();
+
+    expect(Array.from(pixel)).toEqual([232, 230, 245, 255]);
   });
 });

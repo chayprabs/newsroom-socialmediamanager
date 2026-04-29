@@ -9,7 +9,7 @@ export type ImageOutputFormat = 'png' | 'jpeg' | 'webp';
 export type ImageBackground = 'opaque' | 'transparent' | 'auto';
 
 export const PORTRAIT_SAFE_AREA_INSTRUCTION =
-  'Create a portrait social data graphic on a full-bleed lavender #E8E6F5 canvas. Use generous inner margins and keep the full headline and chart visible in the top 88% of the canvas. Leave the bottom 12% empty lavender for the deterministic footer overlay. Do not draw a crop box, safe-area guide, border, frame, or white card.';
+  'Create a portrait social data graphic on a full-bleed lavender #E8E6F5 canvas. Use generous inner margins and keep the full headline and chart visible in the top 82% of the canvas. Leave the bottom 18% empty lavender for the deterministic footer overlay. Do not draw a crop box, safe-area guide, border, frame, or white card.';
 
 const LAVENDER_BACKGROUND = '#E8E6F5';
 const LANDSCAPE_TEMPLATE = 'event_effect_multi_panel_line';
@@ -145,7 +145,54 @@ function formatValue(value: number, signed = false) {
   return signed && value > 0 ? `+${rounded}` : String(rounded);
 }
 
-function rowColor(row: GeneratedPostData['rows'][number], isDiverging: boolean) {
+type SvgRow = {
+  label?: string;
+  value: number;
+  color?: string;
+};
+
+function fallbackRows(data: GeneratedPostData): SvgRow[] {
+  if (Array.isArray(data.rows) && data.rows.length > 0) {
+    return data.rows.map((row) => ({
+      label: row.label || row.entity || row.date || 'Item',
+      value: row.value,
+      color: row.color || row.brand_color_hex,
+    }));
+  }
+
+  if (Array.isArray(data.segments) && data.segments.length > 0) {
+    return data.segments.map((segment) => ({
+      label: segment.label,
+      value: segment.value,
+      color: segment.color,
+    }));
+  }
+
+  if (Array.isArray(data.points) && data.points.length > 0) {
+    return data.points.map((point) => ({
+      label: point.label || point.date || 'Point',
+      value: point.value,
+      color: point.color || point.brand_color_hex,
+    }));
+  }
+
+  if (Array.isArray(data.entities) && data.entities.length > 0) {
+    return data.entities.map((entity) => ({
+      label: entity.entity,
+      value:
+        typeof entity.end_value === 'number'
+          ? entity.end_value
+          : typeof entity.y === 'number'
+            ? entity.y
+            : entity.points?.at(-1)?.value ?? 0,
+      color: entity.color || entity.brand_color_hex,
+    }));
+  }
+
+  return [{ label: 'No data', value: 1 }];
+}
+
+function rowColor(row: SvgRow, isDiverging: boolean) {
   if (!isDiverging) return '#6B5BD9';
   if (row.value < 0) return '#D92D20';
   if (row.value > 0) return '#12B76A';
@@ -155,8 +202,8 @@ function rowColor(row: GeneratedPostData['rows'][number], isDiverging: boolean) 
 export function renderPostSvg(data: GeneratedPostData, template = '') {
   const width = 1080;
   const height = 1350;
-  const maxValue = Math.max(...data.rows.map((row) => Math.abs(row.value)), 1);
-  const rows = data.rows.slice(0, 12);
+  const rows = fallbackRows(data).slice(0, 12);
+  const maxValue = Math.max(...rows.map((row) => Math.abs(row.value)), 1);
   const titleLines = wrapText(data.title || 'Untitled post', 27).slice(0, 2);
   const subtitleLines = wrapText(data.subtitle || '', 52).slice(0, 2);
   const chartTop = 360;
@@ -175,7 +222,7 @@ export function renderPostSvg(data: GeneratedPostData, template = '') {
       const barWidth = Math.max(8, (Math.abs(row.value) / maxValue) * maxBarWidth);
       const color = rowColor(row, false);
       const valueX = Math.min(barX + barWidth + 18, width - 70);
-      return `<text x="${labelX}" y="${y + Math.floor(barHeight * 0.72)}" fill="#1A1A1A" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="500">${escapeXml(truncateText(row.label, 25))}</text>
+      return `<text x="${labelX}" y="${y + Math.floor(barHeight * 0.72)}" fill="#1A1A1A" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="500">${escapeXml(truncateText(row.label || 'Item', 25))}</text>
     <rect x="${barX}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${escapeXml(color)}"/>
     <text x="${valueX}" y="${y + Math.floor(barHeight * 0.72)}" fill="#111111" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700">${escapeXml(formatValue(row.value))}</text>`;
     })
@@ -190,7 +237,7 @@ export function renderPostSvg(data: GeneratedPostData, template = '') {
       const x = row.value < 0 ? axisX - barWidth : axisX;
       const valueX = row.value < 0 ? x - 16 : x + barWidth + 16;
       const anchor = row.value < 0 ? 'end' : 'start';
-      return `<text x="${labelX}" y="${y + Math.floor(barHeight * 0.72)}" fill="#1A1A1A" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="500">${escapeXml(truncateText(row.label, 28))}</text>
+      return `<text x="${labelX}" y="${y + Math.floor(barHeight * 0.72)}" fill="#1A1A1A" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="500">${escapeXml(truncateText(row.label || 'Item', 28))}</text>
     <line x1="${axisX}" y1="${y - 10}" x2="${axisX}" y2="${y + barHeight + 10}" stroke="#CCCCCC" stroke-width="2"/>
     <rect x="${x}" y="${y}" width="${barWidth}" height="${barHeight}" fill="${escapeXml(rowColor(row, true))}"/>
     <text x="${valueX}" y="${y + Math.floor(barHeight * 0.72)}" fill="#111111" text-anchor="${anchor}" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700">${escapeXml(formatValue(row.value, true))}</text>`;

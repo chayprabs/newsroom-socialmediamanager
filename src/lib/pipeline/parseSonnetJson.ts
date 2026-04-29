@@ -23,12 +23,60 @@ function contextAround(text: string, position?: number) {
   return text.slice(start, end);
 }
 
+function collectJsonObjectCandidates(text: string) {
+  const candidates: string[] = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\' && inString) {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (char === '{') {
+      if (depth === 0) {
+        start = index;
+      }
+      depth += 1;
+      continue;
+    }
+
+    if (char === '}' && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start !== -1) {
+        candidates.push(text.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return candidates;
+}
+
 export function parseSonnetJson<T = unknown>(rawText: string): T {
   const cleaned = stripMarkdownFence(rawText);
-  const firstBrace = cleaned.indexOf('{');
-  const lastBrace = cleaned.lastIndexOf('}');
+  const candidates = collectJsonObjectCandidates(cleaned);
 
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+  if (!candidates.length) {
     throw new Error(
       `Sonnet JSON parse failed: cleaned text length=${cleaned.length}; parse error position=unknown; context="${cleaned.slice(
         0,
@@ -37,18 +85,25 @@ export function parseSonnetJson<T = unknown>(rawText: string): T {
     );
   }
 
-  const jsonText = cleaned.slice(firstBrace, lastBrace + 1);
+  let lastError: unknown;
+  let lastJsonText = candidates[candidates.length - 1];
 
-  try {
-    return JSON.parse(jsonText) as T;
-  } catch (error) {
-    const position = parseJsonErrorPosition(error);
-    throw new Error(
-      `Sonnet JSON parse failed: cleaned text length=${jsonText.length}; parse error position=${
-        position ?? 'unknown'
-      }; context="${contextAround(jsonText, position)}"; original error=${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    const jsonText = candidates[index];
+    try {
+      return JSON.parse(jsonText) as T;
+    } catch (error) {
+      lastError = error;
+      lastJsonText = jsonText;
+    }
   }
+
+  const position = parseJsonErrorPosition(lastError);
+  throw new Error(
+    `Sonnet JSON parse failed: cleaned text length=${lastJsonText.length}; parse error position=${
+      position ?? 'unknown'
+    }; context="${contextAround(lastJsonText, position)}"; original error=${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`
+  );
 }

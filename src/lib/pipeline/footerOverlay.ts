@@ -19,7 +19,6 @@ const LAVENDER_BACKGROUND = '#E8E6F5';
 export type FooterOverlayOptions = {
   footerAssetPath?: string;
   exportSize?: string;
-  bottomMargin?: number;
 };
 
 export type FooterOverlayResult = {
@@ -84,6 +83,15 @@ function svgTextOnlyFooter() {
   );
 }
 
+function footerBackgroundBand(width: number, height: number) {
+  return Buffer.from(
+    `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="${width}" height="${height}" fill="${LAVENDER_BACKGROUND}"/>
+    </svg>`,
+    'utf8'
+  );
+}
+
 async function buildFallbackFooter(width: number) {
   return sharp(svgTextOnlyFooter())
     .resize({ width })
@@ -117,7 +125,6 @@ export async function applyFooterOverlay(
 ): Promise<FooterOverlayResult> {
   const warnings: string[] = [];
   const footerAssetPath = options.footerAssetPath || DEFAULT_FOOTER_ASSET_PATH;
-  const bottomMargin = options.bottomMargin ?? 0;
   const exportDimensions = resolveExportDimensions(options.exportSize, warnings);
 
   let rawMetadata: sharp.Metadata;
@@ -156,7 +163,7 @@ export async function applyFooterOverlay(
   }
 
   const footerHeight = footer.info.height;
-  const y = Math.max(0, exportDimensions.height - footerHeight - bottomMargin);
+  const y = Math.max(0, exportDimensions.height - footerHeight);
 
   try {
     await fs.mkdir(path.dirname(outputImagePath), { recursive: true });
@@ -166,7 +173,10 @@ export async function applyFooterOverlay(
         position: 'top',
       })
       .flatten({ background: LAVENDER_BACKGROUND })
-      .composite([{ input: footer.data, left: 0, top: y }])
+      .composite([
+        { input: footerBackgroundBand(exportDimensions.width, footerHeight), left: 0, top: y },
+        { input: footer.data, left: 0, top: y },
+      ])
       .png()
       .toFile(outputImagePath);
   } catch (error) {

@@ -910,7 +910,7 @@ guardrails:
 
 ## 4. Visual conventions for editorial planning
 
-This is not the full design spec. Use this only to pick the correct visual shape during candidate judging.
+This is not the full design spec. Use this only to pick the correct visual shape during candidate judging. The authoritative allowed template list and detailed use_when/do_not_use_when rules live in `design.md` section 0.
 
 ```yaml
 visual_convention_map:
@@ -957,7 +957,7 @@ visual_convention_map:
     chart_story: "The visual gap is the story."
     data_minimum: "3 categories"
 
-  stacked_talent_origin_block:
+  stacked_horizontal_bar:
     use_for:
       - "current team composition by prior employer"
       - "talent density"
@@ -965,11 +965,10 @@ visual_convention_map:
     chart_story: "The big blocks from elite companies explain the valuation/hype."
     data_minimum: "5+ categories; sample size required"
 
-  pie_or_donut_distribution:
+  donut_chart:
     use_for:
       - "country/category share distributions"
     example_source_refs: ["prd_v3"]
-    confidence: "weak_signal"
     chart_story: "Shares of a fixed total."
     data_minimum: "3+ categories"
 
@@ -980,6 +979,34 @@ visual_convention_map:
     confidence: "weak_signal"
     chart_story: "The split outcome is the story."
     data_minimum: "4+ categories with signed values"
+
+  multi_line_timeseries:
+    use_for:
+      - "3-5 named entities changing over time on the same metric"
+    example_source_refs: ["design.md section 8.6"]
+    chart_story: "Relative trends and crossovers are the story."
+    data_minimum: "3 entities, 6+ points per entity"
+
+  single_line_timeseries_with_annotations:
+    use_for:
+      - "one company/product over time where specific events explain inflection points"
+    example_source_refs: ["design.md section 8.7"]
+    chart_story: "The event pills explain why the line moved."
+    data_minimum: "6+ points and 2+ events"
+
+  slope_chart:
+    use_for:
+      - "before/after comparison across several entities"
+    example_source_refs: ["design.md section 8.10"]
+    chart_story: "Rank changes between two dates are the story."
+    data_minimum: "4+ entities with exactly two time points"
+
+  scatter_plot:
+    use_for:
+      - "relationship between two metrics across multiple entities"
+    example_source_refs: ["design.md section 8.11"]
+    chart_story: "The correlation or outliers are the story."
+    data_minimum: "4+ entities with x/y values"
 ```
 
 ### 4.1 Image-quality contract (editorial side)
@@ -1025,6 +1052,34 @@ image_quality_contract:
     single_line_timeseries:
       min_points: 6
       max_points: 12
+    diverging_horizontal_bar:
+      min_rows: 5
+      max_rows: 10
+      rule: "Use only when values are signed changes with a meaningful zero baseline."
+    multi_line_timeseries:
+      min_entities: 3
+      max_entities: 5
+      rule: "Use entities with comparable points on the same metric and time range."
+    single_line_timeseries_with_annotations:
+      min_points: 6
+      max_points: 16
+      rule: "Use annotations only when events are present in the source data or candidate context."
+    stacked_horizontal_bar:
+      min_segments: 4
+      max_segments: 8
+      rule: "Segments must describe one whole and should sum to 100%."
+    donut_chart:
+      min_segments: 3
+      max_segments: 8
+      rule: "Use only when the total is meaningful."
+    slope_chart:
+      min_entities: 4
+      max_entities: 10
+      rule: "Use exactly two time points."
+    scatter_plot:
+      min_entities: 4
+      max_entities: 15
+      rule: "Use only when each entity has both x and y values."
 
   brand_color_anchors:
     rule: "When Stage 3 assigns colors to chart rows for distinct named brands, use this anchor table. If no anchor applies, use the default purple #6B5BD9."
@@ -1059,7 +1114,7 @@ This contract binds the Stage 2 reframer's `visual_template` field to the worked
 
 ```yaml
 image_generation_contract:
-  rule: "The visual_template field on every reframed candidate MUST exactly match one of the allowed_templates names below. These are the only templates with worked-example prompt skeletons in design.md. Inventing new template names is forbidden."
+  rule: "The visual_template field on every reframed candidate MUST exactly match one of the worked-example template ids in design.md section 0 / section 8. Inventing new template names is forbidden."
 
   allowed_templates:
     - id: ranked_horizontal_bar
@@ -1087,6 +1142,41 @@ image_generation_contract:
       data_shape: "points[date,value] + annotations[date,label] (max 5 annotations)."
       worked_example: "design.md section 8.4"
 
+    - id: diverging_horizontal_bar
+      use_for: "Signed changes across categories with a meaningful zero baseline."
+      data_shape: "rows[label,value,total?], 5-10 rows, values may be positive or negative."
+      worked_example: "design.md section 8.5"
+
+    - id: multi_line_timeseries
+      use_for: "3-5 named entities tracked over time on the same metric."
+      data_shape: "entities[entity,points[date,value]], 6-12 points per entity."
+      worked_example: "design.md section 8.6"
+
+    - id: single_line_timeseries_with_annotations
+      use_for: "One entity over time where narrative events explain inflection points."
+      data_shape: "points[date,value] + annotations[date,label,sublabel?]."
+      worked_example: "design.md section 8.7"
+
+    - id: stacked_horizontal_bar
+      use_for: "Composition of one whole, such as where a company's employees came from or a customer/revenue mix."
+      data_shape: "segments[label,value,count?], values sum to 100%."
+      worked_example: "design.md section 8.8"
+
+    - id: donut_chart
+      use_for: "Geographic or categorical distribution where the total count matters."
+      data_shape: "segments[label,value,flag_or_logo?], 3-8 segments, plus donut_hole_total and donut_hole_label."
+      worked_example: "design.md section 8.9"
+
+    - id: slope_chart
+      use_for: "Before-and-after comparison across several entities between exactly two time points."
+      data_shape: "entities[entity,start_value,end_value] plus start_time_label and end_time_label."
+      worked_example: "design.md section 8.10"
+
+    - id: scatter_plot
+      use_for: "Relationship between two metrics across multiple entities."
+      data_shape: "entities[entity,x,y] plus x_axis_label and y_axis_label."
+      worked_example: "design.md section 8.11"
+
     - id: event_effect_multi_panel_line
       use_for: "Special-case landscape post: pre/post comparison across 3+ entities sharing the same event type."
       auto_select: false
@@ -1096,10 +1186,10 @@ image_generation_contract:
   forbidden_template_names:
     - "Any name not in allowed_templates."
     - "Variants like 'horizontal_bar', 'bar_chart', 'line_chart', 'comparison_chart', 'timeseries' — these are not valid template ids."
-    - "Compound names like 'ranked_horizontal_bar_with_logos' or 'ranked_horizontal_bar_with_left_logos' (use ranked_horizontal_bar_with_icons) or 'donut_chart' (no worked example exists)."
+    - "Compound names like 'ranked_horizontal_bar_with_logos' or 'ranked_horizontal_bar_with_left_logos' (use ranked_horizontal_bar_with_icons)."
 
   no_template_fits_rule:
-    rule: "If the candidate's data shape does not fit any of allowed_templates, mark the candidate INFEASIBLE in the reframer output. Set feasible=false and reason='no design.md visual_template fits this data shape'. Do not invent a new template name to keep the candidate alive."
+    rule: "If the candidate's data shape does not fit any allowed template from design.md section 0, mark the candidate INFEASIBLE in the reframer output. Set feasible=false and reason='no design.md visual_template fits this data shape'. Do not invent a new template name to keep the candidate alive."
 
   validation_path:
     rule: "The pipeline's feasibility validator (validateFeasibility in src/lib/server/pipeline.ts) and Stage 4a prompt builder both look up the visual_template by exact string match. A typo or invented name will fail validation and the run will fall back to no_matches."

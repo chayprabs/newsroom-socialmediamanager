@@ -2,7 +2,7 @@
 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { Download } from 'lucide-react';
+import { Download, Loader2 } from 'lucide-react';
 import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
@@ -136,7 +136,28 @@ export function ReviewPost() {
                     placeholder="Make the headline shorter, adjust colors, or simplify the chart."
                     style={{ width: '100%', height: '140px', border: '0.5px solid #E5E5E5', borderRadius: '8px', padding: '12px', fontSize: '13px', resize: 'none', outline: 'none', marginBottom: '16px' }}
                   />
-                  <button onClick={handleRegenerate} disabled={isWorking} className="transition-all" style={{ width: '100%', backgroundColor: isWorking ? '#E5E5E5' : '#000', color: isWorking ? '#999' : '#fff', height: '36px', fontSize: '13px', fontWeight: 500, borderRadius: '8px', border: 'none', cursor: isWorking ? 'not-allowed' : 'pointer' }}>
+                  <button
+                    onClick={handleRegenerate}
+                    disabled={isWorking}
+                    aria-live="polite"
+                    className="transition-all"
+                    style={{
+                      width: '100%',
+                      backgroundColor: isWorking ? '#E5E5E5' : '#000',
+                      color: isWorking ? '#777' : '#fff',
+                      height: '36px',
+                      fontSize: '13px',
+                      fontWeight: 500,
+                      borderRadius: '8px',
+                      border: 'none',
+                      cursor: isWorking ? 'not-allowed' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    {isWorking && <Loader2 className="animate-spin" size={14} aria-hidden="true" />}
                     {isWorking ? 'Regenerating' : 'Regenerate'}
                   </button>
                   {run.error && (
