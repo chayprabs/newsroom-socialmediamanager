@@ -7,6 +7,11 @@ interface DebugFile {
   url: string;
 }
 
+const DEBUG_LABELS: Record<string, string> = {
+  'post_raw.png': 'Pre-footer raw image',
+  'stage_4c_footer_overlay.json': 'Footer overlay',
+};
+
 interface DebugBundleProps {
   runId: string | null;
   visible: boolean;
@@ -60,10 +65,10 @@ export function DebugBundle({ runId, visible, filter, label }: DebugBundleProps)
           <a
             key={file.name}
             href={file.url}
-            download
+            download={file.name.endsWith('.png') ? undefined : true}
             style={{ color: '#555', fontSize: '12px', textDecoration: 'underline', textUnderlineOffset: '2px' }}
           >
-            {file.name}
+            {DEBUG_LABELS[file.name] ?? file.name}
           </a>
         ))}
       </div>

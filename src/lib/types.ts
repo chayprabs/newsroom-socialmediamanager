@@ -135,5 +135,6 @@ export interface UsageSummary {
   total_sonnet_calls: number;
   stage_2_total?: UsageStageSummary;
   stage_4_total?: UsageStageSummary;
+  stage_4c_duration_ms?: number;
   by_stage: UsageStageSummary[];
 }

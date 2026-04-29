@@ -155,7 +155,8 @@ This is the section I'd most want a reviewer to read. The interesting work isn't
 │       ├── pipeline.log        # JSONL log of every Sonnet call + custom events
 │       ├── usage_summary.json  # Aggregated token + cache usage by stage
 │       ├── debug/              # Raw prompts and model responses per stage
-│       └── image.png           # The final post image
+│       ├── post_raw.png        # Pre-footer raw image from Stage 4b
+│       └── post.png            # Final Stage 4c composited post image
 ├── public/                     # Static assets (favicon, manifest, OG image)
 ├── src/
 │   ├── app/                    # Next.js App Router
@@ -256,7 +257,7 @@ Open [http://localhost:3000](http://localhost:3000) and sign in with the demo cr
 | `OPENAI_IMAGE_QUALITY` | `high` |
 | `OPENAI_IMAGE_FORMAT` | `png` |
 | `OPENAI_IMAGE_BACKGROUND` | `opaque` |
-| `OPENAI_IMAGE_EXPORT_SIZE` | `auto` |
+| `OPENAI_IMAGE_EXPORT_SIZE` | `1080x1350` |
 | `OPENAI_IMAGE_SAFE_AREA` | `1024x1280` |
 
 ### Optional / local‑only
@@ -441,12 +442,13 @@ If `total_cache_reads` stays at zero across later calls, the prefix is not being
 
 ## Image generation quality
 
-Stage 4 is split into two sub‑steps:
+Stage 4 is split into three sub‑steps:
 
 1. **Stage 4a — prompt builder.** Sonnet reads `design/design.md`, fills the matching worked-example skeleton, and returns a structured `submit_image_prompt` tool call with `prompt`, `template_used`, `character_count`, and `hex_colors_used`.
-2. **Stage 4b — image call.** The validated prompt is sent to GPT‑Image‑2, then the generated image is normalized/exported in `src/lib/server/image.ts`.
+2. **Stage 4b — image call.** The validated prompt is sent to GPT‑Image‑2 and saved as `runs/<runId>/post_raw.png`.
+3. **Stage 4c — footer overlay.** `src/lib/pipeline/footerOverlay.ts` resizes the raw image to the export size and composites `public/assets/brand/crustdata-footer.png` onto the bottom, producing the canonical `runs/<runId>/post.png`.
 
-`src/lib/pipeline/imagePromptValidator.ts` runs between 4a and 4b. It blocks prompts that are missing required visual elements: the lavender background hex `#E8E6F5`, `full bleed`/`full-bleed`, exact footer text `Data from: Crustdata`, a `hexagonal` logo description, a do-not-crop headline instruction, portrait layout language, and at least three literal hex colors. It also logs warnings for vague style phrases like `in the Crustdata style`, rainbow/varied color language, and suspicious rounded-bar wording.
+`src/lib/pipeline/imagePromptValidator.ts` runs between 4a and 4b. It blocks prompts that are missing required visual elements: the lavender background hex `#E8E6F5`, `full bleed`/`full-bleed`, `EMPTY FOOTER ZONE`, the exact instruction `Do NOT render "Data from:"`, a bottom 12%/bottom 184px footer-zone instruction, a do-not-crop headline instruction, portrait layout language, and at least three literal hex colors. It also logs warnings for footer/brand rendering language, vague style phrases like `in the Crustdata style`, rainbow/varied color language, and suspicious rounded-bar wording.
 
 Canvas dimensions come from env at module load:
 
@@ -454,14 +456,22 @@ Canvas dimensions come from env at module load:
 | --- | --- | --- |
 | `OPENAI_IMAGE_SIZE` | `1024x1536` | GPT‑Image‑2 API generation canvas; prompts describe this as portrait rather than a visible frame |
 | `OPENAI_IMAGE_SAFE_AREA` | `1024x1280` | legacy debug/env value only; no longer used as a crop box |
-| `OPENAI_IMAGE_EXPORT_SIZE` | `auto` | `auto` preserves the full generated image; `WIDTHxHEIGHT` resizes with contain/letterbox on lavender, never crops |
+| `OPENAI_IMAGE_EXPORT_SIZE` | `1080x1350` | final dashboard/download export; Stage 4c resizes with `cover`/`top` before applying the footer |
 | `OPENAI_IMAGE_BACKGROUND` | `opaque` | OpenAI API background mode; prompt still pins lavender `#E8E6F5` |
 
-The builder substitutes the relevant env values into `design.md` placeholders and into the Stage 4a system prompt before calling Sonnet. The OpenAI API still receives an exact generation size, but the generated post is treated as a flexible portrait composition and the exporter preserves the full image instead of center-cropping to a safe area.
+The builder substitutes the relevant env values into `design.md` placeholders and into the Stage 4a system prompt before calling Sonnet. The OpenAI API still receives an exact generation size; the generated post reserves the bottom 12% as empty lavender and Stage 4c owns the final export resize plus footer composite.
 
-When an image fails to match expectations, inspect `runs/<runId>/debug/` or use the **View debug bundle** section in the UI. The most useful files are `stage_4_image_prompt.txt`, `stage_4_image_prompt_meta.json`, `stage_4a_validation_result.json`, `stage_4a_env_snapshot.json`, and `stage_4a_attempt_*.txt`. Validation failures also preserve `stage_4a_validation_failure_*.json`.
+When an image fails to match expectations, inspect `runs/<runId>/debug/` or use the **View debug bundle** section in the UI. The most useful files are `stage_4_image_prompt.txt`, `stage_4_image_prompt_meta.json`, `stage_4a_validation_result.json`, `stage_4a_env_snapshot.json`, `stage_4a_attempt_*.txt`, `stage_4c_footer_overlay.json`, and root-level `post_raw.png`. Validation failures also preserve `stage_4a_validation_failure_*.json`.
 
-`design/design.md` is the source of truth for visual specs. To change the look — background, footer, typography, chart skeletons, color rules, or portrait layout language — edit `design.md`, not the pipeline code. The code only enforces that the prompt contains the required pieces.
+`design/design.md` is the source of truth for visual specs. To change the chart look — background, typography, chart skeletons, color rules, or portrait layout language — edit `design.md`, not the pipeline code. To change the footer appearance, replace `public/assets/brand/crustdata-footer.png`.
+
+### Why is the footer pixel-perfect?
+
+Generative image models cannot reliably reproduce vector logo assets or render small text consistently. To guarantee brand consistency, Newsroom uses a hybrid pipeline: GPT-image-2 generates the chart, headline, and background, while a deterministic Node-based compositing step (Stage 4c) overlays a real Crustdata footer asset onto every image. This means:
+
+- The footer is identical across every generated post.
+- The Crustdata logo is the real vector mark, not an AI approximation.
+- Updating the footer is a one-file replacement (`public/assets/brand/crustdata-footer.png`), no code change required.
 
 ---
 
@@ -489,9 +499,11 @@ runs/<run_id>/
 │   ├── stage_4a_validation_result.json
 │   ├── stage_4_image_prompt.txt
 │   ├── stage_4_image_prompt_meta.json
+│   ├── stage_4c_footer_overlay.json
 │   ├── stage_5_caption_prompt.txt
 │   └── stage_5_caption_response.json
-└── image.png                # The final post image
+├── post_raw.png             # Pre-footer raw image
+└── post.png                 # Final Stage 4c composited post image
 ```
 
 The `pipeline.log` is JSONL of structured events:
@@ -500,6 +512,7 @@ The `pipeline.log` is JSONL of structured events:
 { "event": "sonnet_usage", "stage": "stage_2_score", "run_id": "...", "input_tokens": 4123, "output_tokens": 412, "cache_creation_input_tokens": 9847, "cache_read_input_tokens": 0, ... }
 { "event": "sonnet_usage", "stage": "stage_2_reframe", "run_id": "...", "input_tokens": 1023, "output_tokens": 1843, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 9847, ... }
 { "event": "stage_4_prompt_cap_violation", "run_id": "...", "promptLength": 25431, "cap": 25000, "templateUsed": "ranked_horizontal_bar", "firstChars": "...", "lastChars": "..." }
+{ "event": "stage_usage", "stage": "stage_4c_footer_overlay", "runId": "...", "durationMs": 42, "footerSource": "asset", "success": true, ... }
 ```
 
 `usage_summary.json` is rebuilt automatically every time `logSonnetUsage` is called, so the run detail page always shows live numbers — no separate background job, no manual flush.

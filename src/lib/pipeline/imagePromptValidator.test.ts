@@ -4,7 +4,8 @@ import {
   EXPORT_SIZE,
   MIN_DISTINCT_HEX_COLORS,
   REQUIRED_BACKGROUND_HEX,
-  REQUIRED_FOOTER_TEXT,
+  REQUIRED_EMPTY_FOOTER_ZONE_TEXT,
+  REQUIRED_NO_DATA_FROM_TEXT,
   SAFE_AREA,
   extractHexColors,
   validateImagePrompt,
@@ -12,9 +13,11 @@ import {
 
 const COMPLIANT_PROMPT = `Create a portrait social media post using the full available portrait canvas.
 BACKGROUND: Solid lavender, exact hex ${REQUIRED_BACKGROUND_HEX}, full bleed, edge to edge.
-HEADLINE: heavy-weight sans-serif, color #111111, ~58pt — do not crop or cut off any part of the headline.
+HEADLINE: heavy-weight sans-serif, color #111111, ~58pt - do not crop or cut off any part of the headline.
 BARS: solid #6B5BD9.
-FOOTER: "Data from:" 13pt #666666, small hexagonal cube logo #333333, "${REQUIRED_FOOTER_TEXT}".
+${REQUIRED_EMPTY_FOOTER_ZONE_TEXT} (bottom 12% of canvas):
+The bottom 12% of the canvas (approximately the bottom 184px) MUST be empty lavender background.
+${REQUIRED_NO_DATA_FROM_TEXT} text. Do NOT render any Crustdata logo or wordmark.
 Do NOT use rounded bar ends.`;
 
 describe('extractHexColors', () => {
@@ -30,10 +33,10 @@ describe('extractHexColors', () => {
 });
 
 describe('validateImagePrompt', () => {
-  it('returns valid: true with no warnings for a fully compliant prompt', () => {
+  it('returns valid: true for a fully compliant empty-footer-zone prompt', () => {
     const result = validateImagePrompt(COMPLIANT_PROMPT);
 
-    expect(result).toEqual({ valid: true, warnings: [] });
+    expect(result.valid).toBe(true);
   });
 
   describe('required substring checks', () => {
@@ -61,21 +64,32 @@ describe('validateImagePrompt', () => {
       }
     });
 
-    it('flags a missing exact footer text', () => {
-      const result = validateImagePrompt(COMPLIANT_PROMPT.replace(REQUIRED_FOOTER_TEXT, 'Data from CrustData'));
+    it('flags a missing empty footer zone heading', () => {
+      const result = validateImagePrompt(COMPLIANT_PROMPT.replace(REQUIRED_EMPTY_FOOTER_ZONE_TEXT, 'FOOTER AREA'));
 
       expect(result.valid).toBe(false);
       if (!result.valid) {
-        expect(result.missing).toContain(REQUIRED_FOOTER_TEXT);
+        expect(result.missing).toContain(REQUIRED_EMPTY_FOOTER_ZONE_TEXT);
       }
     });
 
-    it('flags a missing hexagonal logo description', () => {
-      const result = validateImagePrompt(COMPLIANT_PROMPT.replace('hexagonal cube', 'square box'));
+    it('flags a missing no Data from instruction', () => {
+      const result = validateImagePrompt(COMPLIANT_PROMPT.replace(REQUIRED_NO_DATA_FROM_TEXT, 'Do not render footer'));
 
       expect(result.valid).toBe(false);
       if (!result.valid) {
-        expect(result.missing.some((m) => m.toLowerCase().includes('hexagonal'))).toBe(true);
+        expect(result.missing).toContain(REQUIRED_NO_DATA_FROM_TEXT);
+      }
+    });
+
+    it('flags a missing bottom zone height instruction', () => {
+      const result = validateImagePrompt(
+        COMPLIANT_PROMPT.replaceAll('bottom 12%', 'lower area').replaceAll('bottom 184px', 'lower pixels')
+      );
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.missing.some((m) => m.includes('bottom 12% or bottom 184px'))).toBe(true);
       }
     });
 
@@ -89,7 +103,9 @@ describe('validateImagePrompt', () => {
     });
 
     it('flags when no do-not-crop variant is present', () => {
-      const result = validateImagePrompt(COMPLIANT_PROMPT.replace('do not crop or cut off any part of the headline', 'visible headline'));
+      const result = validateImagePrompt(
+        COMPLIANT_PROMPT.replace('do not crop or cut off any part of the headline', 'visible headline')
+      );
 
       expect(result.valid).toBe(false);
       if (!result.valid) {
@@ -98,7 +114,7 @@ describe('validateImagePrompt', () => {
     });
 
     it('flags fewer than 3 distinct hex colors', () => {
-      const sparsePrompt = `portrait ${REQUIRED_BACKGROUND_HEX} full bleed ${REQUIRED_FOOTER_TEXT} hexagonal do not crop #111111`;
+      const sparsePrompt = `portrait ${REQUIRED_BACKGROUND_HEX} full bleed ${REQUIRED_EMPTY_FOOTER_ZONE_TEXT} ${REQUIRED_NO_DATA_FROM_TEXT} bottom 12% do not crop #111111`;
 
       const result = validateImagePrompt(sparsePrompt);
 
@@ -119,6 +135,14 @@ describe('validateImagePrompt', () => {
   });
 
   describe('warnings (do not block)', () => {
+    it('flags footer text and logo language', () => {
+      const result = validateImagePrompt(COMPLIANT_PROMPT);
+
+      expect(result.valid).toBe(true);
+      expect(result.warnings.some((w) => w.includes('"Data from:"'))).toBe(true);
+      expect(result.warnings.some((w) => w.includes('footer logo language'))).toBe(true);
+    });
+
     it('flags paraphrase keywords stylish/modern/clean', () => {
       const prompt = `${COMPLIANT_PROMPT}\nUse a stylish modern clean look.`;
 

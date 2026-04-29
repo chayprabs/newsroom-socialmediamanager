@@ -5,14 +5,13 @@
  * Required substrings block (cause a retry); soft warnings are logged but do not block.
  *
  * Canvas/export env values are still surfaced for diagnostics, but validation now checks
- * for a portrait layout contract instead of requiring exact pixel dimensions in the prompt.
- * GPT-image-2 receives the exact generation size via the API call, and post-processing
- * preserves the full generated image instead of cropping to a centered safe area.
+ * for an empty footer zone contract instead of asking GPT-image-2 to render brand footer
+ * text or logo assets. Stage 4c composites the real footer after image generation.
  */
 
 const DEFAULT_CANVAS_SIZE = '1024x1536';
 const DEFAULT_SAFE_AREA = '1024x1280';
-const DEFAULT_EXPORT_SIZE = 'auto';
+const DEFAULT_EXPORT_SIZE = '1080x1350';
 const DEFAULT_BACKGROUND_MODE = 'opaque';
 
 export const CANVAS_SIZE = process.env.OPENAI_IMAGE_SIZE ?? DEFAULT_CANVAS_SIZE;
@@ -21,14 +20,17 @@ export const EXPORT_SIZE = process.env.OPENAI_IMAGE_EXPORT_SIZE ?? DEFAULT_EXPOR
 export const BACKGROUND_MODE = process.env.OPENAI_IMAGE_BACKGROUND ?? DEFAULT_BACKGROUND_MODE;
 
 export const REQUIRED_BACKGROUND_HEX = '#E8E6F5';
-export const REQUIRED_FOOTER_TEXT = 'Data from: Crustdata';
+export const REQUIRED_EMPTY_FOOTER_ZONE_TEXT = 'EMPTY FOOTER ZONE';
+export const REQUIRED_NO_DATA_FROM_TEXT = 'Do NOT render "Data from:"';
 export const MIN_DISTINCT_HEX_COLORS = 3;
 
 const HEX_COLOR_REGEX = /#[0-9A-Fa-f]{6}/g;
 const FULL_BLEED_RE = /full[-\s]bleed/i;
-const HEXAGONAL_RE = /hexagonal/i;
 const DO_NOT_CROP_RE = /(do not crop|must not be cropped|not cropped)/i;
 const PORTRAIT_RE = /\bportrait\b/i;
+const FOOTER_ZONE_HEIGHT_RE = /(bottom 12%|bottom 184px)/;
+const DATA_FROM_RE = /Data from:/;
+const FOOTER_LOGO_RE = /\b(hexagon|cube logo|Crustdata logo)\b/i;
 
 const PARAPHRASE_WORDS = ['stylish', 'modern', 'clean'] as const;
 const STYLE_PARAPHRASE_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
@@ -94,12 +96,16 @@ export function validateImagePrompt(prompt: string): ValidationResult {
     missing.push('full-bleed phrase ("full bleed" or "full-bleed")');
   }
 
-  if (!prompt.includes(REQUIRED_FOOTER_TEXT)) {
-    missing.push(REQUIRED_FOOTER_TEXT);
+  if (!prompt.includes(REQUIRED_EMPTY_FOOTER_ZONE_TEXT)) {
+    missing.push(REQUIRED_EMPTY_FOOTER_ZONE_TEXT);
   }
 
-  if (!HEXAGONAL_RE.test(prompt)) {
-    missing.push('hexagonal logo description');
+  if (!prompt.includes(REQUIRED_NO_DATA_FROM_TEXT)) {
+    missing.push(REQUIRED_NO_DATA_FROM_TEXT);
+  }
+
+  if (!FOOTER_ZONE_HEIGHT_RE.test(prompt)) {
+    missing.push('bottom 12% or bottom 184px footer-zone instruction');
   }
 
   if (!DO_NOT_CROP_RE.test(prompt)) {
@@ -134,6 +140,16 @@ export function validateImagePrompt(prompt: string): ValidationResult {
     if (pattern.test(prompt)) {
       warnings.push(`rainbow/varied-color phrase ${label} — likely violates the color encoding rule`);
     }
+  }
+
+  if (DATA_FROM_RE.test(prompt)) {
+    warnings.push('"Data from:" appears in the prompt - GPT-image-2 might still render footer text accidentally');
+  }
+
+  if (FOOTER_LOGO_RE.test(prompt)) {
+    warnings.push(
+      'footer logo language appears in the prompt - GPT-image-2 should leave Crustdata branding to Stage 4c'
+    );
   }
 
   if (hasBareRoundedReference(prompt)) {

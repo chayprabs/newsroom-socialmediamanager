@@ -14,23 +14,33 @@ function getDebugDir(runId: string) {
 export async function GET(_request: Request, context: RouteContext) {
   const { id } = await context.params;
   const dir = getDebugDir(id);
+  const runDir = getRunDir(id);
+  let files: Array<{ name: string; url: string }> = [];
 
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
-    const files = entries
+    files = entries
       .filter((entry) => entry.isFile())
       .map((entry) => ({
         name: entry.name,
         url: `/api/runs/${encodeURIComponent(id)}/debug/${encodeURIComponent(entry.name)}`,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
-
-    return NextResponse.json({ files });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return NextResponse.json({ files: [] });
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
     }
-
-    throw error;
   }
+
+  try {
+    await fs.access(path.join(runDir, 'post_raw.png'));
+    files.unshift({
+      name: 'post_raw.png',
+      url: `/api/runs/${encodeURIComponent(id)}/debug/post_raw.png`,
+    });
+  } catch {
+    // Older runs do not have Stage 4c raw images.
+  }
+
+  return NextResponse.json({ files });
 }

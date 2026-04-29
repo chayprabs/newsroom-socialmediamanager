@@ -48,7 +48,7 @@ describe('getOpenAiImageConfig', () => {
       quality: 'high',
       outputFormat: 'png',
       background: 'opaque',
-      exportSize: 'auto',
+      exportSize: '1080x1350',
       safeArea: '1024x1280',
       isLandscape: false,
     });

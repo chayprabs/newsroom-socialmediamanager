@@ -70,7 +70,7 @@ describe('normalizeGeneratedPostImage', () => {
 });
 
 describe('renderPostSvg', () => {
-  it('uses the Crustdata lavender fallback style with sharp bars and branded footer', () => {
+  it('uses the Crustdata lavender fallback style with sharp bars and an empty footer zone', () => {
     const svg = renderPostSvg({
       title: 'OpenAI alumni destinations',
       subtitle: 'Former OpenAI employees by current employer',
@@ -84,9 +84,8 @@ describe('renderPostSvg', () => {
 
     expect(svg).toContain('fill="#E8E6F5"');
     expect(svg).toContain('fill="#6B5BD9"');
-    expect(svg).toContain('Data from:');
-    expect(svg).toContain('Crustdata');
-    expect(svg).toContain('fill="#333333"');
+    expect(svg).not.toContain('Data from:');
+    expect(svg).not.toContain('Crustdata');
     expect(svg).not.toContain('fill="#FFFFFF"');
     expect(svg).not.toContain('fill="#F8F8F8"');
     expect(svg).not.toContain('rx=');
