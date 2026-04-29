@@ -47,6 +47,11 @@ export function GeneratingProgress() {
   };
 
   const visibleError = run?.error || (!run ? error : '');
+  const errorDetails = run?.error_details;
+  const isStage4aFailure =
+    errorDetails?.kind === 'image_prompt_validation_failed' ||
+    errorDetails?.kind === 'image_prompt_too_long' ||
+    errorDetails?.kind === 'openai_image_rejected';
 
   const StepIndicator = ({ status }: { status: string }) => {
     if (status === 'done') {
@@ -122,8 +127,71 @@ export function GeneratingProgress() {
                 ))}
                 {visibleError ? (
                   <div style={{ fontSize: '12px', color: '#B42318', lineHeight: '1.5', marginTop: '14px' }}>
-                    {visibleError}
-                    <DebugBundle runId={runId} visible={run?.status === 'failed'} />
+                    {errorDetails?.label ? (
+                      <p style={{ fontWeight: 500, color: '#B42318', marginBottom: '4px' }}>
+                        {errorDetails.label}
+                      </p>
+                    ) : null}
+                    <p style={{ color: '#B42318' }}>{visibleError}</p>
+
+                    {errorDetails?.kind === 'image_prompt_validation_failed' &&
+                    errorDetails.missing &&
+                    errorDetails.missing.length > 0 ? (
+                      <div style={{ marginTop: '10px' }}>
+                        <p
+                          style={{
+                            color: '#666',
+                            fontSize: '11px',
+                            fontWeight: 500,
+                            marginBottom: '4px',
+                          }}
+                        >
+                          Missing required elements ({errorDetails.missing.length})
+                        </p>
+                        <ul
+                          style={{
+                            paddingLeft: '16px',
+                            margin: 0,
+                            color: '#666',
+                            fontSize: '11px',
+                            lineHeight: '1.5',
+                            listStyleType: 'disc',
+                          }}
+                        >
+                          {errorDetails.missing.map((entry, index) => (
+                            <li key={`${entry}-${index}`}>{entry}</li>
+                          ))}
+                        </ul>
+                        {typeof errorDetails.attempts === 'number' ? (
+                          <p style={{ color: '#888', fontSize: '11px', marginTop: '6px' }}>
+                            Failed after {errorDetails.attempts} attempt
+                            {errorDetails.attempts === 1 ? '' : 's'}.
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {errorDetails?.kind === 'image_prompt_too_long' &&
+                    typeof errorDetails.prompt_length_chars === 'number' &&
+                    typeof errorDetails.cap_chars === 'number' ? (
+                      <p style={{ color: '#666', fontSize: '11px', marginTop: '8px' }}>
+                        Prompt was {errorDetails.prompt_length_chars.toLocaleString()} characters; cap is{' '}
+                        {errorDetails.cap_chars.toLocaleString()}.
+                      </p>
+                    ) : null}
+
+                    {errorDetails?.kind === 'openai_image_rejected' && errorDetails.status_code ? (
+                      <p style={{ color: '#666', fontSize: '11px', marginTop: '8px' }}>
+                        OpenAI returned HTTP {errorDetails.status_code}.
+                      </p>
+                    ) : null}
+
+                    <DebugBundle
+                      runId={runId}
+                      visible={run?.status === 'failed'}
+                      filter={isStage4aFailure ? 'stage_4a_' : undefined}
+                      label={isStage4aFailure ? 'View debug bundle (Stage 4a)' : 'View debug bundle'}
+                    />
                   </div>
                 ) : null}
               </div>

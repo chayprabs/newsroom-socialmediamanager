@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { CandidateSpec, GeneratedPostData, GenerationStep, RunState } from '../types';
+import type { CandidateSpec, GeneratedPostData, GenerationStep, RunErrorDetails, RunState } from '../types';
 import {
   type AnthropicCallOptions,
   type AnthropicTextBlock,
@@ -23,7 +23,11 @@ import {
   isReframedCandidate,
   type ReframedCandidate,
 } from '../pipeline/reframeCandidates';
-import { buildImagePrompt } from '../pipeline/imagePromptBuilder';
+import {
+  buildImagePrompt,
+  ImagePromptTooLongError,
+  ImagePromptValidationError,
+} from '../pipeline/imagePromptBuilder';
 import { normalizeGeneratedPostImage, renderPostSvg } from './image';
 import {
   formatEndpointCapabilitiesForPrompt,
@@ -133,12 +137,48 @@ async function appendLog(run: RunState, message: string) {
   });
 }
 
+function classifyRunError(error: unknown, message: string): RunErrorDetails {
+  if (error instanceof ImagePromptValidationError) {
+    return {
+      kind: 'image_prompt_validation_failed',
+      label: 'Image prompt validation failed',
+      missing: error.missing,
+      warnings: error.warnings,
+      attempts: error.attempts,
+    };
+  }
+
+  if (error instanceof ImagePromptTooLongError) {
+    const lengthMatch = /produced a prompt of (\d+) chars, exceeding the (\d+) cap/.exec(message);
+    return {
+      kind: 'image_prompt_too_long',
+      label: 'Image prompt exceeded length cap',
+      prompt_length_chars: lengthMatch ? Number(lengthMatch[1]) : undefined,
+      cap_chars: lengthMatch ? Number(lengthMatch[2]) : undefined,
+    };
+  }
+
+  if (error instanceof Error && /^OpenAI image generation failed/.test(error.message)) {
+    const statusMatch = /:\s*(\d{3})\b/.exec(error.message);
+    return {
+      kind: 'openai_image_rejected',
+      label: 'OpenAI API rejected prompt',
+      status_code: statusMatch ? Number(statusMatch[1]) : undefined,
+    };
+  }
+
+  return { kind: 'generic', label: 'Pipeline error' };
+}
+
 async function failRun(run: RunState, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  const errorDetails = classifyRunError(error, message);
+
   return writeRun({
     ...run,
     status: 'failed',
     error: message,
+    error_details: errorDetails,
     logs: [...run.logs, { at: now(), message }],
     generation_steps: run.generation_steps.map((step) =>
       step.status === 'running' ? { ...step, status: 'error', microStatus: message } : step

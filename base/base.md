@@ -36,7 +36,11 @@ source_priority:
   explicitly_excluded: "LinkedIn reposts by non-founders unless the uploaded screenshot itself is included in the primary corpus."
 ```
 
-> **Runtime note:** This file is loaded into context for Sonnet calls in Stage 1, Stage 2 scoring, Stage 2 reframing, and Stage 5 caption writing/regeneration. Anthropic prompt caching should be enabled on this prefix to keep costs manageable. If this file's token count grows beyond ~8k, consider splitting into `base_runtime.md` (slim) and `base_reference.md` (full).
+> **Runtime note:** This file is loaded into context for Sonnet calls in Stage 1 (discovery), Stage 2 scoring, Stage 2 reframing, and Stage 5 caption writing/regeneration. Anthropic prompt caching is enabled on this prefix to keep costs manageable.
+>
+> **Stage 4a (image-prompt construction) does NOT load this file.** Image generation reads `design.md` only — it needs the visual specification, not the editorial DNA. Anything that must influence the rendered image (brand spelling, footer text, color anchors, headline length limits) is mirrored into `design.md` or enforced by the upstream editorial agents that DO read this file.
+>
+> If this file's token count grows beyond ~8k, consider splitting into `base_runtime.md` (slim) and `base_reference.md` (full).
 
 ---
 
@@ -978,6 +982,129 @@ visual_convention_map:
     data_minimum: "4+ categories with signed values"
 ```
 
+### 4.1 Image-quality contract (editorial side)
+
+This contract pins editorial outputs that, if violated, will visibly break the rendered image. Stage 3 (chart-ready data) and Stage 5 (caption/regeneration) must respect every line.
+
+```yaml
+image_quality_contract:
+  background:
+    rule: "Default lavender background is never overridden in editorial outputs. Do not request white, gray, or other backgrounds in regeneration prompts."
+    background_hex: "#E8E6F5"
+
+  brand_capitalization:
+    spelling: "Crustdata"
+    forbidden: ["CrustData", "CRUSTDATA", "crustdata"]
+    note: "Apply to both the post body and the footer string."
+
+  footer:
+    required_text: "Data from: Crustdata"
+    rule: "Always emit footer = 'Data from: Crustdata' on every chart-ready data object. Do not invent custom footers, do not append URLs, do not omit it. The renderer will draw the hexagonal logo between 'Data from:' and 'Crustdata' automatically."
+
+  headline_length:
+    rule: "Headlines must fit on at most 2 lines at ~58pt on a 1024-wide canvas. That means roughly 6-12 words and never more than 70 characters total. If the candidate idea cannot be compressed to that length, edit it before passing to image generation."
+    max_lines: 2
+    soft_max_chars: 70
+    casing: "sentence case or Title Case — never ALL CAPS"
+
+  subtitle_length:
+    rule: "Subtitles must fit on at most 2 lines and state metric + scope + date range/unit. Keep under ~110 characters total."
+    max_lines: 2
+    soft_max_chars: 110
+    forbidden: ["emoji", "ALL CAPS"]
+
+  row_counts:
+    ranked_horizontal_bar:
+      min_rows: 3
+      max_rows: 12
+      rule: "Group small categories into 'Other' rather than rendering >12 rows."
+    vertical_bar_comparison:
+      min_rows: 3
+      max_rows: 5
+      rule: "Vertical bar comparison is a few-categories template — never push beyond 5 entities."
+    single_line_timeseries:
+      min_points: 6
+      max_points: 12
+
+  brand_color_anchors:
+    rule: "When Stage 3 assigns colors to chart rows for distinct named brands, use this anchor table. If no anchor applies, use the default purple #6B5BD9."
+    anchors:
+      Grok: "#1A1A1A"
+      xAI: "#1A1A1A"
+      Claude: "#E47C5A"
+      Anthropic: "#C9785C"
+      OpenAI: "#10A37F"
+      Perplexity: "#20808D"
+      "Google AI Studio": "#4285F4"
+      "Google DeepMind": "#4285F4"
+      Google: "#4285F4"
+      Alphabet: "#4285F4"
+      Meta: "#1877F2"
+      Microsoft: "#00A4EF"
+      Amazon: "#FF9900"
+      Mistral: "#FA520F"
+      "Default purple": "#6B5BD9"
+
+  color_encoding_policy:
+    rule: "Mirror design.md section 3. Stage 3 must pick exactly one of: ranked_same_type (single color, default #6B5BD9), brand_per_entity (anchor color from table above), positive_negative (#2ECC71 / #E74C3C), single_metric_line (entity brand color or #E47C5A)."
+    forbidden: ["rainbow per-row colors in a same-type ranked chart"]
+
+  safe_area_discipline:
+    rule: "All editorial text (title, subtitle, footer, value labels) must fit inside the canvas safe area. Stage 3/5 should not produce strings so long that they force the renderer to crop the title."
+```
+
+### 4.2 Image generation contract (Stage 2 reframer)
+
+This contract binds the Stage 2 reframer's `visual_template` field to the worked-example skeletons that exist in `design.md` section 8. The downstream Stage 4a prompt builder fills the matching skeleton with the candidate's data — there is no fallback path for unknown template names.
+
+```yaml
+image_generation_contract:
+  rule: "The visual_template field on every reframed candidate MUST exactly match one of the allowed_templates names below. These are the only templates with worked-example prompt skeletons in design.md. Inventing new template names is forbidden."
+
+  allowed_templates:
+    - id: ranked_horizontal_bar
+      use_for: "Ranked categories of the same type (top-N hiring functions, employee destinations, founder lineage, traffic by tool when items are not distinct named brands)."
+      data_shape: "rows[label,value], 3-12 rows."
+      worked_example: "design.md section 8.1"
+
+    - id: ranked_horizontal_bar_with_icons
+      use_for: "Ranked categories where each row is a distinct named brand and a small monochrome icon adds context (vibe-coding tool comparison, AI chatbots side-by-side as a list)."
+      data_shape: "rows[label,value], 3-8 rows. Apply brand_per_entity color rule."
+      worked_example: "design.md section 8.1 with brand-per-entity overrides"
+
+    - id: vertical_bar_comparison
+      use_for: "Few-categories competitor comparison (3-5 distinct named brands)."
+      data_shape: "rows[label,value], 3-5 rows. Apply brand_per_entity color rule."
+      worked_example: "design.md section 8.3"
+
+    - id: single_line_timeseries
+      use_for: "One product/company traffic over time. The curve is the story."
+      data_shape: "points[date,value], 6-12 points."
+      worked_example: "design.md section 8.2"
+
+    - id: annotated_line_timeseries
+      use_for: "Single line timeseries plus launch/funding/pivot annotations."
+      data_shape: "points[date,value] + annotations[date,label] (max 5 annotations)."
+      worked_example: "design.md section 8.4"
+
+    - id: event_effect_multi_panel_line
+      use_for: "Special-case landscape post: pre/post comparison across 3+ entities sharing the same event type."
+      auto_select: false
+      override_required: "Human user must explicitly select this template; reframer must NOT auto-pick it."
+      worked_example: "Landscape variant; not part of the default portrait pipeline."
+
+  forbidden_template_names:
+    - "Any name not in allowed_templates."
+    - "Variants like 'horizontal_bar', 'bar_chart', 'line_chart', 'comparison_chart', 'timeseries' — these are not valid template ids."
+    - "Compound names like 'ranked_horizontal_bar_with_logos' (use ranked_horizontal_bar_with_icons) or 'donut_chart' (no worked example exists)."
+
+  no_template_fits_rule:
+    rule: "If the candidate's data shape does not fit any of allowed_templates, mark the candidate INFEASIBLE in the reframer output. Set feasible=false and reason='no design.md visual_template fits this data shape'. Do not invent a new template name to keep the candidate alive."
+
+  validation_path:
+    rule: "The pipeline's feasibility validator (validateFeasibility in src/lib/server/pipeline.ts) and Stage 4a prompt builder both look up the visual_template by exact string match. A typo or invented name will fail validation and the run will fall back to no_matches."
+```
+
 ---
 
 ## 5. Voice guidelines
@@ -987,8 +1114,14 @@ tone:
   core: "confident, data-driven, punchy, mildly contrarian"
   not: "academic, verbose, poetic, corporate PR, meme-only"
 headline_rules:
-  length: "4-12 words preferred; up to 2-3 lines on image"
-  casing: "Title Case is acceptable for main title; sentence case acceptable for question headlines."
+  length:
+    rule: "Fits comfortably in 2 lines at ~58pt within the safe area. Approximately 6-9 words maximum."
+    soft_min_words: 4
+    soft_max_words: 9
+    hard_max_lines: 2
+    hard_max_chars: 70
+    rationale: "Headlines longer than this get cropped at the top of the canvas at the rendered font size. If a draft headline can't be compressed to fit, rewrite it with a sharper noun and a stronger verb before sending it downstream."
+  casing: "Title Case is acceptable for main title; sentence case acceptable for question headlines. Never ALL CAPS."
   punctuation:
     use_questions: true
     use_colons: true
@@ -1000,6 +1133,11 @@ headline_rules:
     - "before/after effect"
     - "strategy revealed by data"
     - "talent-density punchline"
+  forbidden:
+    - "More than 9 words."
+    - "Three or more lines at the rendered ~58pt size."
+    - "ALL CAPS or shouty styling."
+    - "Emoji, decorative punctuation, or trailing ellipses."
 subtitle_rules:
   purpose: "State metric, scope, date range, and unit."
   length: "1 line preferred; 2 lines max."
