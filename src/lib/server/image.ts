@@ -35,47 +35,6 @@ export function parseImageDimensions(value: string, label = 'image size'): Image
   return { width, height };
 }
 
-export function buildPostImagePrompt(
-  data: GeneratedPostData,
-  base: string,
-  design: string,
-  template = '',
-  caption = ''
-) {
-  const isLandscape = isLandscapeImageTemplate(template);
-  const compositionInstruction = isLandscape
-    ? 'Create a polished landscape social media data post image for Newsroom.'
-    : `${PORTRAIT_SAFE_AREA_INSTRUCTION}\n\nCreate a polished vertical social media data post image for Newsroom.`;
-
-  return `Crustdata editorial base (stable cacheable prefix):
-${base}
-
-Crustdata visual design spec (stable cacheable prefix):
-${design}
-
-${compositionInstruction}
-
-Format:
-- Editorial data visualization, not a photorealistic scene.
-- Clean Crustdata-style B2B intelligence design.
-- Premium, restrained, high-contrast, legible typography.
-- Output a finished post image only.
-
-Hard content rules:
-- Use only the title, subtitle, data rows, footer, and caption provided below.
-- Do not invent companies, values, units, annotations, logos, sources, or claims.
-- Keep all visible text crisp and readable.
-- Preserve every number exactly as provided.
-
-Preferred visual template: ${template || 'best chart for the data'}
-
-Post data:
-${JSON.stringify(data, null, 2)}
-
-Caption context:
-${caption || 'No caption provided.'}`;
-}
-
 type NormalizeGeneratedPostImageOptions = {
   generationSize: string;
   exportSize: string;

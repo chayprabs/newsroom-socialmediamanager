@@ -65,6 +65,24 @@ describe('validateFeasibility', () => {
     expect(result.reason).toMatch(/urls/);
   });
 
+  it('preserves a reframer infeasibility decision before endpoint validation', () => {
+    const result = validateFeasibility({
+      candidate_id: 'c_rejected',
+      feasible: false,
+      reason: 'Requires /web/search/live, which is unavailable on this key.',
+      headline: 'Recent posts about every new AI launch',
+      subhead: 'Needs broad live web discovery.',
+      crustdata_query: {
+        endpoint: '',
+        params: {},
+      },
+      visual_template: 'bar',
+    });
+
+    expect(result.feasible).toBe(false);
+    expect(result.reason).toContain('/web/search/live');
+  });
+
   it('rejects overly narrow search queries before they reach selection', () => {
     const result = validateFeasibility({
       candidate_id: 'c_narrow',

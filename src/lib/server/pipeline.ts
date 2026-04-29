@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { CandidateSpec, GeneratedPostData, GenerationStep, RunState } from '../types';
 import {
+  type AnthropicCallOptions,
   type AnthropicTextBlock,
   type AnthropicResponse,
   callAnthropicWithResponse,
@@ -9,9 +10,21 @@ import {
   generateOpenAiImage,
   isOpenAiImageConfigured,
 } from './clients';
-import { logSonnetUsage } from '../pipeline/tokenLogger';
+import { logSonnetUsage, logStageUsage } from '../pipeline/tokenLogger';
 import { extractJsonObjectWithDiagnostics } from '../pipeline/jsonDiagnostics';
-import { buildPostImagePrompt, normalizeGeneratedPostImage, renderPostSvg } from './image';
+import {
+  buildScoreCandidatesPrompt,
+  isScoredCandidate,
+  scoreTotal,
+  type ScoredCandidate,
+} from '../pipeline/scoreCandidates';
+import {
+  buildReframeCandidatesPrompt,
+  isReframedCandidate,
+  type ReframedCandidate,
+} from '../pipeline/reframeCandidates';
+import { buildImagePrompt } from '../pipeline/imagePromptBuilder';
+import { normalizeGeneratedPostImage, renderPostSvg } from './image';
 import {
   formatEndpointCapabilitiesForPrompt,
   getEndpointCapability,
@@ -46,10 +59,6 @@ type CandidateForValidation = Omit<Partial<CandidateSpec>, 'crustdata_query'> & 
   };
 };
 
-type ScoredCandidate = Partial<CandidateSpec> & {
-  candidate_id: string;
-};
-
 type RuntimeKnowledgeFile = 'base' | 'design';
 type RuntimeKnowledge = Partial<Record<RuntimeKnowledgeFile, string>>;
 
@@ -74,6 +83,13 @@ const UNSUPPORTED_QUESTION_PATTERNS = [
     reason: 'Crustdata has no verified endpoint for comment sentiment analysis.',
   },
 ];
+const NON_API_HELPER_PARAM_NAMES = new Set([
+  '_note',
+  'post_processing',
+  'grouping_notes',
+  'transform',
+  'client_side_grouping',
+]);
 
 function isUsableCrustdataEndpoint(endpoint: string) {
   return getEndpointCapability(endpoint)?.availability === 'usable';
@@ -638,39 +654,49 @@ function noUsableDataMessage(endpoint: string) {
   return `Crustdata returned no usable data for ${endpoint}. The query was structurally valid, but it did not return enough rows or matches to build a trustworthy chart.`;
 }
 
-function scoreTotal(candidate: Pick<CandidateSpec, 'scores'>) {
-  return typeof candidate.scores?.total === 'number' ? candidate.scores.total : 0;
-}
-
 function getCandidateId(candidate: CandidateForValidation) {
   return typeof candidate.candidate_id === 'string' ? candidate.candidate_id : '';
 }
 
-function normalizeValidatedCandidate(candidate: CandidateForValidation, scoredById: Map<string, ScoredCandidate>) {
+function stripNonApiHelperParams(params: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(params).filter(([name]) => !NON_API_HELPER_PARAM_NAMES.has(name))
+  );
+}
+
+function normalizeValidatedCandidate(
+  candidate: CandidateForValidation,
+  scoredById: Map<string, ScoredCandidate>
+): CandidateSpec & CandidateForValidation {
   const candidateId = getCandidateId(candidate);
   const scoredCandidate = scoredById.get(candidateId);
   const rawEndpoint = candidate.crustdata_query?.endpoint || '';
   const endpoint = rawEndpoint.trim() ? normalizeCrustdataEndpoint(rawEndpoint) : '';
 
-  return {
+  const normalized: CandidateSpec & CandidateForValidation = {
     candidate_id: candidateId,
-    headline: candidate.headline || scoredCandidate?.headline || 'Untitled idea',
-    subhead: candidate.subhead || scoredCandidate?.subhead || candidate.rationale || '',
+    feasible: candidate.feasible,
+    reason: candidate.reason,
+    infeasibility_reason: candidate.infeasibility_reason,
+    headline: candidate.headline || 'Untitled idea',
+    subhead: candidate.subhead || candidate.rationale || '',
     source: candidate.source || scoredCandidate?.source,
     source_url: candidate.source_url || scoredCandidate?.source_url,
     scores: candidate.scores || scoredCandidate?.scores,
     matched_archetype: candidate.matched_archetype || scoredCandidate?.matched_archetype,
     matched_angle: candidate.matched_angle || scoredCandidate?.matched_angle,
     matched_visual: candidate.matched_visual || scoredCandidate?.matched_visual,
-    rationale: candidate.rationale || scoredCandidate?.rationale,
+    rationale: candidate.rationale,
     crustdata_query: {
       endpoint,
       intent: candidate.crustdata_query?.intent,
-      params: candidate.crustdata_query?.params || {},
+      params: stripNonApiHelperParams(candidate.crustdata_query?.params || {}),
     },
-    visual_template: candidate.visual_template || candidate.matched_visual || scoredCandidate?.visual_template || 'bar',
-    expected_data_shape: candidate.expected_data_shape || scoredCandidate?.expected_data_shape,
-  } satisfies CandidateSpec;
+    visual_template: candidate.visual_template || candidate.matched_visual || scoredCandidate?.matched_visual || 'bar',
+    expected_data_shape: candidate.expected_data_shape,
+  };
+
+  return normalized;
 }
 
 async function logFeasibilityDecision(
@@ -698,13 +724,9 @@ async function logFeasibilityDecision(
 async function createPostImageArtifact(
   runId: string,
   data: GeneratedPostData,
-  base: string,
-  design: string,
-  template: string,
-  caption: string
+  template: string
 ) {
-  const prompt = buildPostImagePrompt(data, base, design, template, caption);
-  await writeRunArtifact(runId, 'image-prompt.txt', prompt);
+  const prompt = await buildImagePrompt(data, template, runId);
 
   if (isOpenAiImageConfigured()) {
     const image = await generateOpenAiImage(prompt, { template });
@@ -722,6 +744,19 @@ async function createPostImageArtifact(
     if (image.revisedPrompt) {
       await writeRunArtifact(runId, 'openai-revised-image-prompt.txt', image.revisedPrompt);
     }
+    logStageUsage('stage_4_image', runId, { model: image.model });
+    await appendRunArtifact(
+      runId,
+      FEASIBILITY_LOG_FILENAME,
+      `${JSON.stringify({
+        event: 'stage_4_image',
+        run_id: runId,
+        timestamp: now(),
+        model: image.model,
+        size: image.size,
+        output_format: image.outputFormat,
+      })}\n`
+    );
 
     return {
       imagePath,
@@ -735,6 +770,19 @@ async function createPostImageArtifact(
   }
 
   const svg = renderPostSvg(data, template);
+  logStageUsage('stage_4_image', runId, { model: 'local-svg-fallback' });
+  await appendRunArtifact(
+    runId,
+    FEASIBILITY_LOG_FILENAME,
+    `${JSON.stringify({
+      event: 'stage_4_image',
+      run_id: runId,
+      timestamp: now(),
+      model: 'local-svg-fallback',
+      size: 'local-svg',
+      output_format: 'svg',
+    })}\n`
+  );
   return {
     imagePath: await writeRunArtifact(runId, 'post.svg', svg),
     filename: 'post.svg',
@@ -772,17 +820,12 @@ function cachedRuntimeSystem(
       text: STATIC_PROJECT_CONTEXT,
     },
   ];
-  const lastCachedFile = requiredFiles[requiredFiles.length - 1];
-
   if (requiredFiles.includes('base')) {
     const block: AnthropicTextBlock = {
       type: 'text',
       text: knowledge.base || '',
+      cache_control: { type: 'ephemeral' },
     };
-
-    if (lastCachedFile === 'base') {
-      block.cache_control = { type: 'ephemeral' };
-    }
 
     blocks.push(block);
   }
@@ -791,11 +834,8 @@ function cachedRuntimeSystem(
     const block: AnthropicTextBlock = {
       type: 'text',
       text: knowledge.design || '',
+      cache_control: { type: 'ephemeral' },
     };
-
-    if (lastCachedFile === 'design') {
-      block.cache_control = { type: 'ephemeral' };
-    }
 
     blocks.push(block);
   }
@@ -812,7 +852,7 @@ async function callLoggedAnthropic(
   stage: string,
   runId: string,
   prompt: string,
-  options?: { system?: AnthropicTextBlock[] }
+  options?: AnthropicCallOptions
 ) {
   const { text, response } = await callAnthropicWithResponse(prompt, options);
   logSonnetUsage(stage, runId, response);
@@ -823,7 +863,7 @@ async function callLoggedAnthropicFull(
   stage: string,
   runId: string,
   prompt: string,
-  options?: { system?: AnthropicTextBlock[] }
+  options?: AnthropicCallOptions
 ) {
   const { text, response } = await callAnthropicWithResponse(prompt, options);
   logSonnetUsage(stage, runId, response);
@@ -981,48 +1021,42 @@ Return JSON with this exact shape:
       return noMatches(run, 'No current trends matched the editorial base. Try finding new ideas again.');
     }
 
-    const scoredResponse = await callLoggedAnthropicFull('stage_2_judge', runId, `Candidate trends:
-${JSON.stringify({ candidates: rawCandidateList }, null, 2)}
+    run = await appendLog(run, 'Scoring candidates and checking API feasibility.');
+    const scoredResponse = await callLoggedAnthropicFull(
+      'stage_2_score',
+      runId,
+      buildScoreCandidatesPrompt(rawCandidateList, formatEndpointCapabilitiesForPrompt()),
+      {
+        system: cachedRuntimeSystem(
+          baseKnowledge,
+          ['base'],
+          'You are Stage 2 pass 1 of Newsroom: score all trend candidates and decide initial Crustdata feasibility. Return compact valid JSON only.'
+        ),
+        maxTokens: 4096,
+      }
+    );
 
-Endpoint capability registry:
-${formatEndpointCapabilitiesForPrompt()}
-
-Score every candidate for api_feasibility, recency, archetype_fit, visual_potential, engagement_likelihood, and total.
-api_feasibility must reflect only the usable endpoints in the registry.
-Give higher api_feasibility to broad, data-rich candidates likely to return enough rows for a chart: cohorts, rankings, aggregations, and known company/person sets.
-Penalize candidates with very narrow filters, single obscure entities, sentiment/comment analysis, unavailable endpoints, or anything that would probably return zero rows.
-Return JSON:
-{
-  "scored_candidates": [
-    {
-      "candidate_id": "c_01",
-      "scores": { "api_feasibility": 0, "recency": 0, "archetype_fit": 0, "visual_potential": 0, "engagement_likelihood": 0, "total": 0 },
-      "matched_archetype": "name",
-      "matched_angle": "name",
-      "matched_visual": "chart type",
-      "rationale": "one sentence"
-    }
-  ]
-}`, {
-      system: cachedRuntimeSystem(
-        baseKnowledge,
-        ['base'],
-        'You are Stage 2 of Newsroom: score all trend candidates against the editorial rubric and the audited Crustdata endpoint registry.'
-      ),
-    });
-
-    const scored = await extractJsonObjectWithDiagnostics<{ scored_candidates?: ScoredCandidate[] }>(
-      'stage_2_judge',
+    const scored = await extractJsonObjectWithDiagnostics<{ scored_candidates?: unknown[] }>(
+      'stage_2_score',
       runId,
       scoredResponse.text,
       scoredResponse.response
     );
     const scoredCandidates = (Array.isArray(scored.scored_candidates) ? scored.scored_candidates : []).filter(
-      (candidate): candidate is ScoredCandidate => typeof candidate?.candidate_id === 'string'
+      isScoredCandidate
     );
 
     if (!scoredCandidates.length) {
       return noMatches(run, 'No candidates could be scored. Try finding new ideas again.');
+    }
+
+    const topScoredCandidates = scoredCandidates
+      .filter((candidate) => candidate.feasible)
+      .sort((a, b) => scoreTotal(b) - scoreTotal(a))
+      .slice(0, 3);
+
+    if (!topScoredCandidates.length) {
+      return noMatches(run, 'No candidates passed the Stage 2 API feasibility screen. Try finding new ideas again.');
     }
 
     const scoredById = new Map(scoredCandidates.map((candidate) => [candidate.candidate_id, candidate]));
@@ -1031,73 +1065,39 @@ Return JSON:
       ...baseKnowledge,
       ...(await readRuntimeKnowledge(['design'])),
     };
-    const reframeResponse = await callLoggedAnthropicFull('stage_2_reframer', runId, `Candidate trends:
-${JSON.stringify({ candidates: rawCandidateList }, null, 2)}
+    run = await appendLog(run, `Reframing top ${topScoredCandidates.length} feasible candidate(s).`);
+    const reframeResponse = await callLoggedAnthropicFull(
+      'stage_2_reframe',
+      runId,
+      buildReframeCandidatesPrompt(topScoredCandidates, formatEndpointCapabilitiesForPrompt()),
+      {
+        system: cachedRuntimeSystem(
+          reframeKnowledge,
+          ['base', 'design'],
+          `You are Stage 2 pass 2 of Newsroom: fully reframe only the supplied feasible candidates into deterministic Crustdata query specs. Only use these currently usable endpoints:\n${formatUsableEndpoints()}`
+        ),
+        maxTokens: 4096,
+      }
+    );
 
-Scored candidates:
-${JSON.stringify({ scored_candidates: scoredCandidates }, null, 2)}
-
-Endpoint capability registry:
-${formatEndpointCapabilitiesForPrompt()}
-
-You have a fixed set of Crustdata endpoints available. Listed above is every endpoint, what it can answer, its supported intents, and required parameters.
-You MUST construct crustdata_query so it maps to one usable endpoint with all required parameters present.
-Do not invent endpoints. Do not invent parameters. Do not assume capabilities not documented here.
-If a candidate trend cannot be answered by a usable endpoint in this list, output feasible: false and explain why.
-Prefer broad query specs that are likely to return enough data for a chart. Avoid over-narrow filters. For /job/search, prefer limit: 0 with count/group_by aggregations when the post needs counts. For search endpoints returning rows, request at least 5 rows. Do not use autocomplete endpoints as final post data unless the candidate is specifically about valid filter-value suggestions.
-
-Return one item for each scored candidate as JSON:
-{
-  "candidates": [
-    {
-      "candidate_id": "c_01",
-      "feasible": true,
-      "reason": "short reason; for feasible candidates, explain the endpoint mapping",
-      "headline": "headline",
-      "subhead": "subhead",
-      "source": "short trend source text",
-      "source_url": "https://...",
-      "scores": { "api_feasibility": 0, "recency": 0, "archetype_fit": 0, "visual_potential": 0, "engagement_likelihood": 0, "total": 0 },
-      "matched_archetype": "name",
-      "matched_angle": "name",
-      "matched_visual": "chart type",
-      "rationale": "one sentence",
-      "crustdata_query": { "endpoint": "/job/search", "intent": "hiring_analysis", "params": {} },
-      "visual_template": "diverging_bar",
-      "expected_data_shape": "rows of label/value"
-    }
-  ]
-}`, {
-      system: cachedRuntimeSystem(
-        reframeKnowledge,
-        ['base', 'design'],
-        `You are Stage 2 of Newsroom: reframe scored trends into deterministic Crustdata query specs. Only use these currently usable endpoints:\n${formatUsableEndpoints()}`
-      ),
-    });
-
-    const reframed = await extractJsonObjectWithDiagnostics<{
-      candidates?: CandidateForValidation[];
-      top_3?: CandidateForValidation[];
-    }>(
-      'stage_2_reframer',
+    const reframed = await extractJsonObjectWithDiagnostics<{ candidates?: unknown[] }>(
+      'stage_2_reframe',
       runId,
       reframeResponse.text,
       reframeResponse.response
     );
-    const reframedCandidates = Array.isArray(reframed.candidates)
-      ? reframed.candidates
-      : Array.isArray(reframed.top_3)
-        ? reframed.top_3
-        : [];
+    const reframedCandidates = (Array.isArray(reframed.candidates) ? reframed.candidates : []).filter(
+      isReframedCandidate
+    );
     const reframedCandidateIds = new Set(reframedCandidates.map(getCandidateId).filter(Boolean));
     const validationCandidates: CandidateForValidation[] = [
       ...reframedCandidates,
-      ...scoredCandidates
+      ...topScoredCandidates
         .filter((candidate) => !reframedCandidateIds.has(candidate.candidate_id))
         .map((candidate) => ({
           ...candidate,
           feasible: false,
-          reason: 'Reframer did not return a query spec for this scored candidate.',
+          reason: 'Stage 2 reframe did not return a full query spec for this candidate.',
           crustdata_query: { endpoint: '', params: {} },
         })),
     ];
@@ -1236,17 +1236,10 @@ Return JSON:
     run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
     run = await writeRun(updateStep(run, 'generating_image', 'running', 'Generating the post image.'));
 
-    const imageKnowledge = {
-      ...baseKnowledge,
-      ...(await readRuntimeKnowledge(['design'])),
-    };
     const imageArtifact = await createPostImageArtifact(
       runId,
       shaped.data,
-      imageKnowledge.base || '',
-      imageKnowledge.design || '',
-      selectedCandidate.visual_template || selectedCandidate.matched_visual || '',
-      shaped.caption
+      selectedCandidate.visual_template || selectedCandidate.matched_visual || ''
     );
 
     return writeRun({
@@ -1307,17 +1300,10 @@ Return JSON:
       revisedResponse.text,
       revisedResponse.response
     );
-    const imageKnowledge = {
-      ...baseKnowledge,
-      ...(await readRuntimeKnowledge(['design'])),
-    };
     const imageArtifact = await createPostImageArtifact(
       runId,
       revised.data,
-      imageKnowledge.base || '',
-      imageKnowledge.design || '',
-      run.selected_candidate?.visual_template || run.selected_candidate?.matched_visual || '',
-      revised.caption
+      run.selected_candidate?.visual_template || run.selected_candidate?.matched_visual || ''
     );
 
     return writeRun({

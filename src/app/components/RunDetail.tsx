@@ -6,6 +6,7 @@ import { Download } from 'lucide-react';
 import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
+import { DebugBundle } from './DebugBundle';
 
 function formatTokenCount(value: number) {
   return new Intl.NumberFormat('en-US').format(value);
@@ -167,6 +168,8 @@ export function RunDetail() {
                   </div>
                 </details>
               )}
+
+              <DebugBundle runId={runId} visible={Boolean(runId)} />
 
               <div className="flex items-center justify-center gap-2">
                 <button onClick={() => router.push('/dashboard')} className="transition-all" style={{ backgroundColor: '#fff', border: '0.5px solid #E5E5E5', color: '#000', height: '36px', paddingLeft: '14px', paddingRight: '14px', fontSize: '13px', borderRadius: '8px', cursor: 'pointer' }}>

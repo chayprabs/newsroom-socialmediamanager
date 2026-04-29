@@ -28,6 +28,9 @@ export interface AnthropicResponse {
   content?: Array<{
     type: string;
     text?: string;
+    id?: string;
+    name?: string;
+    input?: unknown;
   }>;
   usage?: {
     input_tokens?: number;
@@ -37,8 +40,19 @@ export interface AnthropicResponse {
   };
 }
 
-type AnthropicCallOptions = {
+export type AnthropicCallOptions = {
   system?: AnthropicTextBlock[];
+  maxTokens?: number;
+  temperature?: number;
+  tools?: Array<{
+    name: string;
+    description?: string;
+    input_schema: Record<string, unknown>;
+  }>;
+  toolChoice?: {
+    type: 'tool';
+    name: string;
+  };
 };
 
 const DEFAULT_OPENAI_IMAGE_MODEL = 'gpt-image-2';
@@ -118,9 +132,11 @@ export async function callAnthropicWithResponse(prompt: string, options: Anthrop
     },
     body: JSON.stringify({
       model,
-      max_tokens: 4096,
-      temperature: 0.2,
+      max_tokens: options.maxTokens ?? 4096,
+      temperature: options.temperature ?? 0.2,
       ...(options.system?.length ? { system: options.system } : {}),
+      ...(options.tools?.length ? { tools: options.tools } : {}),
+      ...(options.toolChoice ? { tool_choice: options.toolChoice } : {}),
       messages: [
         {
           role: 'user',
@@ -140,11 +156,12 @@ export async function callAnthropicWithResponse(prompt: string, options: Anthrop
     ?.map((part) => part.text)
     ?.join('\n');
 
-  if (!text) {
+  const hasToolUse = data.content?.some((part) => part.type === 'tool_use');
+  if (!text && !hasToolUse) {
     throw new Error('Anthropic response did not include text content.');
   }
 
-  return { text: text as string, response: data };
+  return { text: (text || '') as string, response: data };
 }
 
 export async function callAnthropic(prompt: string, options: AnthropicCallOptions = {}) {

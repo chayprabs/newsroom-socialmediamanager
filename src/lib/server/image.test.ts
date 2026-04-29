@@ -1,39 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { GeneratedPostData } from '../types';
-import {
-  PORTRAIT_SAFE_AREA_INSTRUCTION,
-  buildPostImagePrompt,
-  normalizeGeneratedPostImage,
-} from './image';
-
-const postData: GeneratedPostData = {
-  title: 'Hiring shifts toward AI infrastructure',
-  subtitle: 'Indexed job postings by category',
-  rows: [{ label: 'AI infrastructure', value: 42 }],
-  footer: 'Data from: Crustdata',
-};
-
-describe('buildPostImagePrompt', () => {
-  it('adds the portrait safe-area instruction to portrait templates', () => {
-    const prompt = buildPostImagePrompt(postData, 'base', 'design', 'ranked_bar', 'caption');
-
-    expect(prompt).toContain(PORTRAIT_SAFE_AREA_INSTRUCTION);
-    expect(prompt).toContain('Create a polished vertical social media data post image for Newsroom.');
-  });
-
-  it('does not add portrait crop instructions to the landscape exception', () => {
-    const prompt = buildPostImagePrompt(
-      postData,
-      'base',
-      'design',
-      'event_effect_multi_panel_line',
-      'caption'
-    );
-
-    expect(prompt).not.toContain(PORTRAIT_SAFE_AREA_INSTRUCTION);
-    expect(prompt).toContain('Create a polished landscape social media data post image for Newsroom.');
-  });
-});
+import { normalizeGeneratedPostImage } from './image';
 
 describe('normalizeGeneratedPostImage', () => {
   it('exports the centered portrait safe area to 4:5', async () => {

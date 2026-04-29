@@ -1,8 +1,8 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { AnthropicResponse } from '../server/clients';
-import { extractJsonObject } from '../server/json';
 import { getRunDir } from '../server/storage';
+import { parseSonnetJson } from './parseSonnetJson';
 
 interface ParseFailureDiagnostic {
   stage: string;
@@ -29,7 +29,7 @@ function safeStageName(stage: string) {
 
 function parseJsonErrorPosition(error: unknown) {
   if (!(error instanceof Error)) return undefined;
-  const match = error.message.match(/position\s+(\d+)/i);
+  const match = error.message.match(/position[=\s]+(\d+)/i);
   return match ? Number(match[1]) : undefined;
 }
 
@@ -189,7 +189,7 @@ export async function extractJsonObjectWithDiagnostics<T>(
   response?: AnthropicResponse
 ) {
   try {
-    return extractJsonObject<T>(text);
+    return parseSonnetJson<T>(text);
   } catch (error) {
     try {
       await writeParseFailure(stage, runId, text, error, response);

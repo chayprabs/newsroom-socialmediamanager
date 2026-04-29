@@ -108,5 +108,7 @@ export interface UsageSummary {
   total_cache_reads: number;
   total_cache_writes: number;
   total_sonnet_calls: number;
+  stage_2_total?: UsageStageSummary;
+  stage_4_total?: UsageStageSummary;
   by_stage: UsageStageSummary[];
 }
