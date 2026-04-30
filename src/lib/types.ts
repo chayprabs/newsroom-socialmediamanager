@@ -174,6 +174,34 @@ export interface RunState {
   visual_template?: string;
   /** Stage 2 reframer's diversity self-check for the candidate set. */
   template_diversity?: TemplateDiversityCheck;
+  /**
+   * Optional per-run steering text submitted from the Dashboard chat-box.
+   * Threaded into Stage 1 and Stage 2 prompts to bias trend discovery toward a
+   * user-chosen intent (e.g., "AI hiring", "Founder lineage"). Empty/undefined
+   * means general trending — Stage 1 falls back to the static base.md flow.
+   */
+  steering_input?: string;
+  /**
+   * Stage 1's one-sentence acknowledgement of how it interpreted the user's
+   * steering input. When `steering_input` is empty Stage 1 still records a
+   * neutral acknowledgement (e.g., "No steering input — defaulted to general
+   * trending discovery.") so the run-detail UI can surface that the system
+   * understood the user correctly.
+   */
+  steering_acknowledged?: string;
+  /**
+   * Recency window (in days) Stage 1 asked Grok to honor. Stamped alongside
+   * `steering_acknowledged` so the same artifact captures both how the run was
+   * steered and how far back it looked.
+   */
+  steering_time_window_days?: number;
+  /**
+   * When the Dashboard/API truncated a long steering string, this holds the
+   * original character count before truncation (the stored `steering_input`
+   * is capped at 200). Used only to surface a Stage 1 system note—Sonnet never
+   * receives an empty steering string, and we do not sanitize content.
+   */
+  steering_input_truncated_from_chars?: number;
   error?: string;
   error_details?: RunErrorDetails;
 }

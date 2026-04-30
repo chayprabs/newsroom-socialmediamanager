@@ -1,5 +1,5 @@
 import type { CandidateSpec, TemplateDiversityCheck } from '../types';
-import type { ScoredCandidate } from './scoreCandidates';
+import { buildSteeringContextBlock, type ScoredCandidate } from './scoreCandidates';
 
 export type ReframedCandidate = ScoredCandidate & {
   headline?: string;
@@ -120,10 +120,21 @@ ${bullets}
 Heavily prefer template values NOT in this list. If the candidate pool requires reusing a recent template, prefer the LEAST-used one. The dashboard becomes visually monotonous when the same template repeats; aggressive variety is the goal.`;
 }
 
+export interface BuildReframeCandidatesPromptOptions {
+  recentVisualTemplates?: string[];
+  /**
+   * Optional per-run steering text from the Dashboard chat-box. Threaded into
+   * the reframer as a SOFT preference so the reframer keeps the existing
+   * rubric and diversity rule but biases tie-breaks toward candidates that
+   * tightly align with the user's intent.
+   */
+  steeringInput?: string;
+}
+
 export function buildReframeCandidatesPrompt(
   scoredCandidates: ScoredCandidate[],
   endpointRegistry: string,
-  options: { recentVisualTemplates?: string[] } = {}
+  options: BuildReframeCandidatesPromptOptions = {}
 ) {
   const recentTemplates = options.recentVisualTemplates ?? [];
 
@@ -136,6 +147,8 @@ ${endpointRegistry}
 ${VISUAL_TEMPLATE_GUIDE}
 
 ${formatRecentTemplatesBlock(recentTemplates)}
+
+${buildSteeringContextBlock(options.steeringInput)}
 
 Pass 2 task: fully reframe only these feasible candidates into deterministic Crustdata query specs and post-ready presentation fields.
 

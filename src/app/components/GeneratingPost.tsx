@@ -65,6 +65,9 @@ export function GeneratingPost() {
   const hasNoMatches = run?.status === 'no_matches';
   const visibleError = run?.error || (!run ? error : '');
   const hasFailure = run?.status === 'failed' || Boolean(visibleError);
+  const steeringTrimmed = run?.steering_input?.trim() ?? '';
+  const showSteeredDiscoverMessage =
+    Boolean(steeringTrimmed) && !hasNoMatches && !hasFailure;
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -108,8 +111,28 @@ export function GeneratingPost() {
               )}
             </div>
 
-            <h1 style={{ fontSize: '20px', fontWeight: 500, color: '#000', marginBottom: '8px' }}>
-              {hasNoMatches ? 'No strong ideas found' : hasFailure ? 'Idea discovery failed' : 'Finding relevant ideas'}
+            <h1
+              style={{
+                fontSize: '20px',
+                fontWeight: showSteeredDiscoverMessage ? 400 : 500,
+                color: '#000',
+                marginBottom: '8px',
+                textAlign: 'center',
+                lineHeight: 1.35,
+              }}
+            >
+              {hasNoMatches ? (
+                'No strong ideas found'
+              ) : hasFailure ? (
+                'Idea discovery failed'
+              ) : showSteeredDiscoverMessage ? (
+                <>
+                  Searching X for trending conversations about:{' '}
+                  <span style={{ fontWeight: 500 }}>{steeringTrimmed}</span>
+                </>
+              ) : (
+                'Finding relevant ideas…'
+              )}
             </h1>
             <p
               className="text-center"

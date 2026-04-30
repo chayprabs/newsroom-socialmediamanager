@@ -49,6 +49,48 @@ export function RunDetail() {
                 </p>
               </div>
 
+              <div
+                className="bg-white"
+                style={{
+                  border: '0.5px solid #E5E5E5',
+                  borderRadius: '12px',
+                  padding: '16px',
+                  marginBottom: '28px',
+                }}
+              >
+                <div style={{ marginBottom: '16px' }}>
+                  <p
+                    style={{
+                      fontSize: '11px',
+                      color: '#888',
+                      letterSpacing: '0.04em',
+                      textTransform: 'uppercase',
+                      marginBottom: '8px',
+                      fontWeight: 400,
+                    }}
+                  >
+                    User intent
+                  </p>
+                  {run.steering_input?.trim() ? (
+                    <p style={{ fontSize: '13px', fontWeight: 400, color: '#1A1A1A', lineHeight: 1.5 }}>
+                      {run.steering_input.trim()}
+                    </p>
+                  ) : (
+                    <p style={{ fontSize: '13px', fontStyle: 'italic', fontWeight: 400, color: '#1A1A1A', lineHeight: 1.5 }}>
+                      No user intent — general trending discovery
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <p style={{ fontSize: '11px', color: '#888', fontWeight: 400, marginBottom: '6px' }}>
+                    Newsroom interpreted this as:
+                  </p>
+                  <p style={{ fontSize: '12px', color: '#888', fontStyle: 'italic', lineHeight: 1.5 }}>
+                    {run.steering_acknowledged?.trim() || 'Not recorded for this run.'}
+                  </p>
+                </div>
+              </div>
+
               <div className="flex justify-center" style={{ marginBottom: '32px' }}>
                 <div
                   onMouseEnter={() => setIsImageHovered(true)}
