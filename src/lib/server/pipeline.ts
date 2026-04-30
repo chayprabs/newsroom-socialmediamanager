@@ -101,6 +101,7 @@ export const MAX_STEERING_INPUT_CHARS = 200;
 const DEFAULT_STEERING_TIME_WINDOW_DAYS = 7;
 const MIN_STEERING_TIME_WINDOW_DAYS = 1;
 const MAX_STEERING_TIME_WINDOW_DAYS = 30;
+const SHOULD_PREFLIGHT_CRUSTDATA = process.env.NEWSROOM_PREFLIGHT_CRUSTDATA !== '0';
 const DISCOVERY_CANDIDATES_TOOL_NAME = 'submit_discovery_candidates';
 const SCORE_CANDIDATES_TOOL_NAME = 'submit_candidate_scores';
 const REFRAME_CANDIDATES_TOOL_NAME = 'submit_reframed_candidates';
@@ -1478,6 +1479,45 @@ function noUsableDataMessage(endpoint: string) {
   return `Crustdata returned no usable data for ${endpoint}. The query was structurally valid, but it did not return enough rows or matches to build a trustworthy chart.`;
 }
 
+function artifactSafeId(value: string) {
+  const safe = value.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return safe || 'candidate';
+}
+
+async function preflightCandidateData(runId: string, candidate: CandidateSpec): Promise<FeasibilityResult> {
+  const endpoint = normalizeCrustdataEndpoint(candidate.crustdata_query.endpoint);
+
+  try {
+    const rawData = await callCrustdata(endpoint, candidate.crustdata_query.params);
+    await writeRunArtifact(
+      runId,
+      `crustdata-preflight-${artifactSafeId(candidate.candidate_id)}.json`,
+      JSON.stringify(rawData, null, 2)
+    );
+
+    if (!hasCrustdataUsableData(endpoint, rawData)) {
+      return {
+        feasible: false,
+        reason: noUsableDataMessage(endpoint),
+        mapped_endpoints: [endpoint],
+      };
+    }
+
+    return {
+      feasible: true,
+      reason: `Crustdata preflight returned usable data for ${endpoint}.`,
+      mapped_endpoints: [endpoint],
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      feasible: false,
+      reason: `Crustdata preflight failed for ${endpoint}: ${message}`,
+      mapped_endpoints: [endpoint],
+    };
+  }
+}
+
 function getCandidateId(candidate: CandidateForValidation) {
   return typeof candidate.candidate_id === 'string' ? candidate.candidate_id : '';
 }
@@ -2176,7 +2216,21 @@ Submit the candidates through the submit_discovery_candidates tool.`,
       });
 
       if (decision.feasible) {
-        feasibleCandidates.push(normalizedCandidate);
+        if (!SHOULD_PREFLIGHT_CRUSTDATA) {
+          feasibleCandidates.push(normalizedCandidate);
+          continue;
+        }
+
+        const preflightDecision = await preflightCandidateData(runId, normalizedCandidate);
+        const preflightLogEntry = await logFeasibilityDecision(runId, normalizedCandidate, preflightDecision);
+        validationLogs.push({
+          at: now(),
+          message: `Data preflight ${preflightLogEntry.feasibility}: ${preflightLogEntry.candidate_id} - ${preflightLogEntry.reason}`,
+        });
+
+        if (preflightDecision.feasible) {
+          feasibleCandidates.push(normalizedCandidate);
+        }
       }
     }
 
@@ -2353,25 +2407,82 @@ export async function generatePost(runId: string) {
     if (!run.selected_candidate) {
       throw new Error('No selected candidate to generate from.');
     }
-    const selectedCandidate = run.selected_candidate;
+    let selectedCandidate = run.selected_candidate;
 
     if (!run.data || !run.caption) {
-      const endpoint = normalizeCrustdataEndpoint(selectedCandidate.crustdata_query.endpoint);
-      if (!isUsableCrustdataEndpoint(endpoint)) {
-        throw new Error(`Crustdata endpoint ${endpoint} has not been verified for this API key.`);
+      run = await writeRun({ ...run, status: 'generating', error: undefined });
+      const candidatePool = [
+        selectedCandidate,
+        ...run.candidates.filter((candidate) => candidate.candidate_id !== selectedCandidate.candidate_id),
+      ];
+      const failedCandidateMessages: string[] = [];
+      let rawData: unknown | undefined;
+
+      for (const [index, candidate] of candidatePool.entries()) {
+        const endpoint = normalizeCrustdataEndpoint(candidate.crustdata_query.endpoint);
+        const isFallbackCandidate = index > 0;
+        const candidateLabel = candidate.headline || candidate.candidate_id;
+
+        if (!isUsableCrustdataEndpoint(endpoint)) {
+          failedCandidateMessages.push(`${candidateLabel}: Crustdata endpoint ${endpoint} has not been verified for this API key.`);
+          continue;
+        }
+
+        if (isFallbackCandidate) {
+          run = await appendLog(
+            run,
+            `Selected idea returned no usable data. Trying backup candidate: ${candidateLabel}.`
+          );
+        }
+
+        selectedCandidate = candidate;
+        run = await writeRun({
+          ...run,
+          selected_candidate_id: candidate.candidate_id,
+          selected_candidate: candidate,
+          selected_chart_template: isFallbackCandidate ? undefined : run.selected_chart_template,
+          selected_chart_rationale: isFallbackCandidate ? undefined : run.selected_chart_rationale,
+          data: undefined,
+          caption: undefined,
+        });
+        run = await writeRun(
+          updateStep(
+            run,
+            'fetching_data',
+            'running',
+            isFallbackCandidate ? `Trying backup idea: ${candidateLabel}.` : 'Calling Crustdata API.'
+          )
+        );
+
+        try {
+          const candidateRawData = await callCrustdata(endpoint, candidate.crustdata_query.params);
+          await writeRunArtifact(
+            runId,
+            `crustdata-response-${artifactSafeId(candidate.candidate_id)}.json`,
+            JSON.stringify(candidateRawData, null, 2)
+          );
+
+          if (hasCrustdataUsableData(endpoint, candidateRawData)) {
+            rawData = candidateRawData;
+            await writeRunArtifact(runId, 'crustdata-response.json', JSON.stringify(candidateRawData, null, 2));
+            break;
+          }
+
+          const message = noUsableDataMessage(endpoint);
+          failedCandidateMessages.push(`${candidateLabel}: ${message}`);
+          run = await appendLog(run, `No usable Crustdata data for ${candidateLabel}: ${message}`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          failedCandidateMessages.push(`${candidateLabel}: ${message}`);
+          run = await appendLog(run, `Crustdata fetch failed for ${candidateLabel}: ${message}`);
+        }
       }
 
-      run = await writeRun({ ...run, status: 'generating', error: undefined });
-      run = await writeRun(updateStep(run, 'fetching_data', 'running', 'Calling Crustdata API.'));
-
-      const rawData = await callCrustdata(
-        endpoint,
-        selectedCandidate.crustdata_query.params
-      );
-
-      await writeRunArtifact(runId, 'crustdata-response.json', JSON.stringify(rawData, null, 2));
-      if (!hasCrustdataUsableData(endpoint, rawData)) {
-        throw new Error(noUsableDataMessage(endpoint));
+      if (rawData === undefined) {
+        const summary = failedCandidateMessages.slice(0, 3).join(' ');
+        throw new Error(
+          `Crustdata returned no usable data for any surfaced candidate.${summary ? ` ${summary}` : ''}`
+        );
       }
 
       run = await writeRun(updateStep(run, 'fetching_data', 'done'));
