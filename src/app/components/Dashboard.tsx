@@ -67,7 +67,6 @@ export function Dashboard() {
   const [isCreating, setIsCreating] = useState(false);
   const [steeringInput, setSteeringInput] = useState('');
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const [keepChipsAfterSelection, setKeepChipsAfterSelection] = useState(false);
   const [hoveredChip, setHoveredChip] = useState<string | null>(null);
   const [recentSteerings, setRecentSteerings] = useState<string[]>([]);
 
@@ -126,7 +125,6 @@ export function Dashboard() {
   }, [recentSteerings]);
 
   const inputBorderColor = isInputFocused ? '#1A1A1A' : '#E5E5E5';
-  const showSuggestionChips = steeringInput.trim().length === 0 || keepChipsAfterSelection;
 
   return (
     <div className="h-screen flex flex-col bg-white">
@@ -159,21 +157,28 @@ export function Dashboard() {
             </p>
           </div>
 
-          <div style={{ marginBottom: '24px' }}>
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              border: '0.5px solid #E5E5E5',
+              borderRadius: '12px',
+              padding: '20px',
+              marginBottom: '32px',
+              boxSizing: 'border-box',
+              width: '100%',
+            }}
+          >
             <div
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: '14px',
+                gap: '12px',
               }}
             >
               <input
                 type="text"
                 value={steeringInput}
-                onChange={(event) => {
-                  setSteeringInput(event.target.value);
-                  setKeepChipsAfterSelection(false);
-                }}
+                onChange={(event) => setSteeringInput(event.target.value)}
                 onFocus={() => setIsInputFocused(true)}
                 onBlur={() => setIsInputFocused(false)}
                 onKeyDown={(event) => {
@@ -182,22 +187,20 @@ export function Dashboard() {
                     handleCreateRun();
                   }
                 }}
-                placeholder="What do you want a post about? (Optional — leave blank for general trending discovery)"
+                placeholder={'What do you want a post about? (Optional \u2014 leave blank for general trending discovery)'}
                 aria-label="Steering input for the next run"
                 className="min-w-0 placeholder:text-[#999999]"
                 style={{
-                  flex: '0 1 520px',
-                  width: '520px',
-                  maxWidth: '100%',
-                  height: '36px',
-                  padding: '10px 12px',
+                  flex: '1 1 auto',
+                  height: '40px',
+                  padding: '0 14px',
                   fontSize: '14px',
                   fontWeight: 400,
                   fontFamily: 'inherit',
                   color: '#1A1A1A',
                   border: `0.5px solid ${inputBorderColor}`,
                   borderRadius: '8px',
-                  backgroundColor: '#FFFFFF',
+                  backgroundColor: '#FAFAFA',
                   outline: 'none',
                   boxShadow: 'none',
                   transition: 'border-color 120ms ease',
@@ -210,9 +213,9 @@ export function Dashboard() {
                   flexShrink: 0,
                   backgroundColor: isCreating ? '#888888' : '#0F0F0F',
                   color: '#fff',
-                  height: '36px',
-                  padding: '0 20px',
-                  fontSize: '14px',
+                  height: '40px',
+                  padding: '0 18px',
+                  fontSize: '13px',
                   fontWeight: 500,
                   borderRadius: '8px',
                   border: 'none',
@@ -238,17 +241,11 @@ export function Dashboard() {
             <div
               role="group"
               aria-label="Suggested steering topics"
-              aria-hidden={!showSuggestionChips}
               style={{
                 display: 'flex',
-                flexWrap: 'nowrap',
+                flexWrap: 'wrap',
                 gap: '8px',
-                marginTop: showSuggestionChips ? '12px' : '0',
-                maxHeight: showSuggestionChips ? '32px' : '0',
-                opacity: showSuggestionChips ? 1 : 0,
-                overflow: 'hidden',
-                pointerEvents: showSuggestionChips ? 'auto' : 'none',
-                transition: 'opacity 160ms ease, max-height 160ms ease, margin-top 160ms ease',
+                marginTop: '14px',
               }}
             >
               {chips.map((chip) => {
@@ -257,10 +254,7 @@ export function Dashboard() {
                   <button
                     key={`${chip.value}:${chip.label}`}
                     type="button"
-                    onClick={() => {
-                      setSteeringInput(chip.value);
-                      setKeepChipsAfterSelection(true);
-                    }}
+                    onClick={() => setSteeringInput(chip.value)}
                     onMouseEnter={() => setHoveredChip(chip.label)}
                     onMouseLeave={() =>
                       setHoveredChip((prev) => (prev === chip.label ? null : prev))
@@ -275,8 +269,8 @@ export function Dashboard() {
                       color: '#444444',
                       border: 'none',
                       borderRadius: '9999px',
-                      padding: '6px 12px',
-                      fontSize: '12pt',
+                      padding: '0 12px',
+                      fontSize: '12px',
                       fontWeight: 400,
                       fontFamily: 'inherit',
                       lineHeight: 1,
