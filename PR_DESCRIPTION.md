@@ -1,38 +1,38 @@
-# Newsroom: user-steered topic discovery via Dashboard chat box
+# Fix lavender seam in footer overlay output
 
 ## Summary
 
-This PR adds an optional Dashboard steering input so each run can be guided by a fresh user intent instead of reusing the same static `base.md`-only discovery query.
+This PR fixes the Stage 4c footer seam by making the footer overlay step own the entire final canvas background.
 
-- Adds a single-row Dashboard input beside the existing `Generate new post` button.
-- Shows static suggestion chips, with up to two recent steerings prepended when available.
-- Sends optional `steering_input` through run creation, Stage 1 discovery, Stage 2 scoring/reframing, and run persistence.
-- Adds Stage 1 forced tool use for `submit_grok_query`, including `steering_acknowledged` and `time_window_days`.
-- Tracks topic history so Stage 1 can avoid repeating obvious angles for recently used steerings.
-- Displays active steering on the Trend Discovery waiting page.
-- Displays user intent and Newsroom's interpretation on the Run Detail page.
+- Creates a solid `#E8E6F5` lavender canvas at the exact export size before compositing.
+- Resizes the AI image into the non-footer area using Lanczos, top-aligned, with the actual footer height reserved.
+- Snaps near-lavender AI background pixels back to exact `#E8E6F5`, preventing subtle drift from forming a boundary line.
+- Composites the transparent footer asset onto the lavender reserve and keeps the existing fallback footer path.
+- Saves `runs/<runId>/debug/post_base_with_ai.png` before the footer is applied.
 
 ## Screenshots
 
-Screenshots captured locally:
+Screenshots were generated from the same `post_raw.png` for run `ce6542d6-3fd3-46de-a0e0-9cc12b82897e`.
 
-- `docs/screenshots/dashboard-steering-input.png` - Dashboard with the chat-box steering input and suggestion chips.
-- `docs/screenshots/trend-discovery-steering-waiting.png` - Trend Discovery Waiting page showing `Searching X for trending conversations about: Thinking Machines Lab recent hires`.
-- `docs/screenshots/run-detail-steering.png` - Run Detail page showing both `User intent` and `Newsroom interpreted this as:`.
+Before, using the old direct resize plus footer-band composite:
 
-![Dashboard steering input](docs/screenshots/dashboard-steering-input.png)
+![Before footer seam](docs/screenshots/footer-overlay-before-seam-crop.png)
 
-![Trend discovery waiting](docs/screenshots/trend-discovery-steering-waiting.png)
+After, with the lavender base canvas and background normalization:
 
-![Run detail steering](docs/screenshots/run-detail-steering.png)
+![After footer seam removed](docs/screenshots/footer-overlay-after-seam-crop.png)
+
+Full-size references:
+
+- `docs/screenshots/footer-overlay-before.png`
+- `docs/screenshots/footer-overlay-after.png`
 
 ## Verification
 
+- `npx vitest run tests/footerOverlay.test.ts`
 - `npm test`
-- `npm run build`
-- Dashboard empty input keeps the general trending flow.
-- Dashboard steered input records `steering_input` on the run.
-- Suggestion chip click populates the input and submits that steering.
-- Recent steerings appear before static chips after steered runs exist.
-- Long steering input is truncated to 200 characters server-side.
-- Stage 1 token logs still record Anthropic cache usage fields.
+- `npx tsc --noEmit --pretty false`
+- Fresh local pipeline run `ce6542d6-3fd3-46de-a0e0-9cc12b82897e` completed with `selected_chart_template: ranked_horizontal_bar` and `image_model: gpt-image-2`.
+- Pixel check at footer boundary `y=1220`: before `[231,228,246,255] -> [232,230,245,255]`; after `[232,230,245,255] -> [232,230,245,255]`.
+- `debug/post_base_with_ai.png` is 1080x1350 and has exact lavender rows at `y=1219` and `y=1220`.
+- Missing-footer fallback remains covered by `tests/footerOverlay.test.ts`.

@@ -34,6 +34,14 @@ async function makeRawImageWithFooterLeak(filePath: string) {
   await sharp(Buffer.from(leakSvg)).png().toFile(filePath);
 }
 
+async function makeRawImageWithLavenderDrift(filePath: string) {
+  const driftSvg = `<svg width="1080" height="1350" viewBox="0 0 1080 1350" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1080" height="1350" fill="#E7E4F6"/>
+    <rect x="120" y="120" width="280" height="60" fill="#111111"/>
+  </svg>`;
+  await sharp(Buffer.from(driftSvg)).png().toFile(filePath);
+}
+
 async function makeFooterAsset(filePath: string) {
   const svg = `<svg width="1080" height="130" viewBox="0 0 1080 130" xmlns="http://www.w3.org/2000/svg">
     <rect width="1080" height="130" fill="transparent"/>
@@ -147,5 +155,26 @@ describe('applyFooterOverlay', () => {
 
     expect(await readPixel(debugPath, 10, 1340)).toEqual([232, 230, 245, 255]);
     expect(await readPixel(outputPath, 10, 1340)).toEqual([232, 230, 245, 255]);
+  });
+
+  it('normalizes slight AI lavender drift at the footer boundary', async () => {
+    const dir = await makeTempDir();
+    const rawPath = path.join(dir, 'raw.png');
+    const outputPath = path.join(dir, 'post.png');
+    const footerPath = path.join(dir, 'footer.png');
+    await makeRawImageWithLavenderDrift(rawPath);
+    await makeFooterAsset(footerPath);
+
+    const result = await applyFooterOverlay(rawPath, outputPath, {
+      footerAssetPath: footerPath,
+      exportSize: '1080x1350',
+    });
+    const debugPath = path.join(dir, 'debug', 'post_base_with_ai.png');
+    const boundaryY = result.appliedAt.y;
+
+    expect(await readPixel(debugPath, 10, boundaryY - 1)).toEqual([232, 230, 245, 255]);
+    expect(await readPixel(debugPath, 10, boundaryY)).toEqual([232, 230, 245, 255]);
+    expect(await readPixel(outputPath, 10, boundaryY - 1)).toEqual([232, 230, 245, 255]);
+    expect(await readPixel(outputPath, 10, boundaryY)).toEqual([232, 230, 245, 255]);
   });
 });

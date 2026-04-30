@@ -14,7 +14,9 @@ const DEFAULT_FOOTER_ASSET_PATH = path.join(
   'brand',
   'crustdata-footer.png'
 );
-const LAVENDER_BACKGROUND = { r: 232, g: 230, b: 245, alpha: 1 };
+const LAVENDER_RGB = { r: 232, g: 230, b: 245 };
+const LAVENDER_BACKGROUND = { ...LAVENDER_RGB, alpha: 1 };
+const LAVENDER_SNAP_TOLERANCE = 10;
 const BASE_WITH_AI_DEBUG_FILENAME = 'post_base_with_ai.png';
 
 export type FooterOverlayOptions = {
@@ -121,6 +123,46 @@ function lavenderCanvas(width: number, height: number) {
   });
 }
 
+function isNearLavender(r: number, g: number, b: number) {
+  return (
+    Math.abs(r - LAVENDER_RGB.r) <= LAVENDER_SNAP_TOLERANCE &&
+    Math.abs(g - LAVENDER_RGB.g) <= LAVENDER_SNAP_TOLERANCE &&
+    Math.abs(b - LAVENDER_RGB.b) <= LAVENDER_SNAP_TOLERANCE
+  );
+}
+
+async function buildAiImageForCanvas(rawImagePath: string, width: number, height: number) {
+  const { data, info } = await sharp(rawImagePath, { failOn: 'none' })
+    .resize(width, height, {
+      fit: 'cover',
+      position: 'top',
+      kernel: sharp.kernel.lanczos3,
+      fastShrinkOnLoad: false,
+    })
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+
+  for (let index = 0; index < data.length; index += 4) {
+    if (isNearLavender(data[index], data[index + 1], data[index + 2])) {
+      data[index] = LAVENDER_RGB.r;
+      data[index + 1] = LAVENDER_RGB.g;
+      data[index + 2] = LAVENDER_RGB.b;
+      data[index + 3] = 255;
+    }
+  }
+
+  return sharp(data, {
+    raw: {
+      width: info.width,
+      height: info.height,
+      channels: 4,
+    },
+  })
+    .png()
+    .toBuffer();
+}
+
 export async function applyFooterOverlay(
   rawImagePath: string,
   outputImagePath: string,
@@ -174,15 +216,7 @@ export async function applyFooterOverlay(
     const debugDir = path.join(outputDir, 'debug');
     await fs.mkdir(debugDir, { recursive: true });
 
-    const aiImage = await sharp(rawImagePath, { failOn: 'none' })
-      .resize(exportDimensions.width, aiTargetHeight, {
-        fit: 'cover',
-        position: 'top',
-        kernel: sharp.kernel.lanczos3,
-        fastShrinkOnLoad: false,
-      })
-      .png()
-      .toBuffer();
+    const aiImage = await buildAiImageForCanvas(rawImagePath, exportDimensions.width, aiTargetHeight);
 
     const baseWithAi = await lavenderCanvas(exportDimensions.width, exportDimensions.height)
       .composite([{ input: aiImage, left: 0, top: 0 }])
