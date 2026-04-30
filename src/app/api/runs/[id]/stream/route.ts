@@ -5,7 +5,7 @@ type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
-const terminalStatuses = ['no_matches', 'awaiting_selection', 'ready', 'saved', 'failed'];
+const terminalStatuses = ['no_matches', 'awaiting_selection', 'awaiting_chart_type_selection', 'ready', 'saved', 'failed'];
 
 export async function GET(_request: Request, context: RouteContext) {
   const { id } = await context.params;

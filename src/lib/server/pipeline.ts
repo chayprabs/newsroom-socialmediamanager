@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { CandidateSpec, GeneratedPostData, GenerationStep, RunErrorDetails, RunState } from '../types';
+import type { CandidateSpec, ChartTypeOption, GeneratedPostData, GenerationStep, RunErrorDetails, RunState } from '../types';
 import {
   type AnthropicCallOptions,
   type AnthropicTextBlock,
@@ -75,6 +75,7 @@ type CandidateForValidation = Omit<Partial<CandidateSpec>, 'crustdata_query'> & 
     intent?: string;
     params?: Record<string, unknown>;
   };
+  chart_type_options?: ChartTypeOption[];
 };
 
 type RuntimeKnowledgeFile = 'base' | 'design';
@@ -170,6 +171,12 @@ function defaultSteps(): GenerationStep[] {
       id: 'finalizing_data',
       title: 'Finalizing data',
       description: 'Shaping the response into a chart-ready format.',
+      status: 'pending',
+    },
+    {
+      id: 'awaiting_chart_type_selection',
+      title: 'Awaiting chart-type selection',
+      description: 'Pick a chart type before the post image is rendered.',
       status: 'pending',
     },
     {
@@ -527,6 +534,39 @@ export function reframeCandidatesTool(): AnthropicTool[] {
                 visual_template: {
                   type: 'string',
                   enum: Array.from(ALLOWED_VISUAL_TEMPLATES),
+                },
+                chart_type_options: {
+                  type: 'array',
+                  minItems: 3,
+                  maxItems: 3,
+                  items: {
+                    type: 'object',
+                    properties: {
+                      rank: { type: 'integer', minimum: 1, maximum: 3 },
+                      visual_template: {
+                        type: 'string',
+                        enum: Array.from(ALLOWED_VISUAL_TEMPLATES),
+                        description: 'Must match a template name in design.md.',
+                      },
+                      rationale: {
+                        type: 'string',
+                        description:
+                          "1-2 sentence explanation of why this chart type fits the data and the user's question. Be specific about what the chart will show.",
+                      },
+                      data_preview: {
+                        type: 'string',
+                        description:
+                          "A short text preview of what the chart will look like with the actual data. Example: 'Ranked bar with 5 rows: Anthropic ($X/employee), OpenAI ($Y/employee), ... - sorted descending.'",
+                      },
+                      suitability_score: {
+                        type: 'integer',
+                        minimum: 1,
+                        maximum: 10,
+                        description: "How well this chart type answers the user's question on a 1-10 scale.",
+                      },
+                    },
+                    required: ['rank', 'visual_template', 'rationale', 'data_preview', 'suitability_score'],
+                  },
                 },
                 expected_data_shape: { type: 'string' },
               },
@@ -1448,6 +1488,54 @@ function stripNonApiHelperParams(params: Record<string, unknown>) {
   );
 }
 
+function normalizeChartTypeOptions(candidate: CandidateForValidation): ChartTypeOption[] | undefined {
+  const rawOptions = Array.isArray(candidate.chart_type_options) ? candidate.chart_type_options : [];
+  const normalized = rawOptions
+    .map((option) => {
+      if (!isRecord(option)) return null;
+      const rank = typeof option.rank === 'number' && Number.isInteger(option.rank) ? option.rank : 0;
+      const visualTemplate = typeof option.visual_template === 'string' ? option.visual_template.trim() : '';
+      const rationale = typeof option.rationale === 'string' ? option.rationale.trim() : '';
+      const dataPreview = typeof option.data_preview === 'string' ? option.data_preview.trim() : '';
+      const suitabilityScore =
+        typeof option.suitability_score === 'number' && Number.isInteger(option.suitability_score)
+          ? option.suitability_score
+          : 0;
+
+      if (rank < 1 || rank > 3 || !ALLOWED_VISUAL_TEMPLATES.has(visualTemplate)) return null;
+
+      return {
+        rank,
+        visual_template: visualTemplate,
+        rationale,
+        data_preview: dataPreview,
+        suitability_score: Math.min(10, Math.max(1, suitabilityScore || 1)),
+      };
+    })
+    .filter((option): option is ChartTypeOption => Boolean(option))
+    .sort((a, b) => a.rank - b.rank);
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const fallbackTemplate =
+    candidate.visual_template?.trim() || candidate.matched_visual?.trim() || '';
+  if (!ALLOWED_VISUAL_TEMPLATES.has(fallbackTemplate)) {
+    return undefined;
+  }
+
+  return [
+    {
+      rank: 1,
+      visual_template: fallbackTemplate,
+      rationale: 'Newsroom selected this as the best available visual template for the candidate.',
+      data_preview: 'Preview will be generated after data is finalized.',
+      suitability_score: 8,
+    },
+  ];
+}
+
 function normalizeValidatedCandidate(
   candidate: CandidateForValidation,
   scoredById: Map<string, ScoredCandidate>
@@ -1462,6 +1550,8 @@ function normalizeValidatedCandidate(
     capability && typeof candidate.crustdata_query?.intent === 'string'
       ? inferSupportedIntent(capability, candidate.crustdata_query.intent, params) || candidate.crustdata_query.intent
       : candidate.crustdata_query?.intent;
+  const chartTypeOptions = normalizeChartTypeOptions(candidate);
+  const topChartTemplate = chartTypeOptions?.[0]?.visual_template;
 
   const normalized: CandidateSpec & CandidateForValidation = {
     candidate_id: candidateId,
@@ -1482,7 +1572,13 @@ function normalizeValidatedCandidate(
       intent,
       params,
     },
-    visual_template: candidate.visual_template || candidate.matched_visual || scoredCandidate?.matched_visual || '',
+    visual_template:
+      topChartTemplate ||
+      candidate.visual_template ||
+      candidate.matched_visual ||
+      scoredCandidate?.matched_visual ||
+      '',
+    chart_type_options: chartTypeOptions,
     expected_data_shape: candidate.expected_data_shape,
   };
 
@@ -2145,6 +2241,7 @@ Submit the candidates through the submit_discovery_candidates tool.`,
         headline: candidate.headline,
         subhead: candidate.subhead,
         visual_template: candidate.visual_template,
+        chart_type_options: candidate.chart_type_options,
         matched_archetype: candidate.matched_archetype,
         matched_angle: candidate.matched_angle,
         crustdata_query: candidate.crustdata_query,
@@ -2187,8 +2284,52 @@ export async function selectCandidate(runId: string, candidateId: string) {
     status: 'generating',
     selected_candidate_id: candidateId,
     selected_candidate: selected,
+    selected_chart_template: undefined,
+    selected_chart_rationale: undefined,
     generation_steps: defaultSteps(),
     logs: [...run.logs, { at: now(), message: `Selected candidate: ${selected.headline}` }],
+  });
+}
+
+function findChartTypeOption(run: RunState, template: string) {
+  const normalizedTemplate = template.trim();
+  return run.selected_candidate?.chart_type_options?.find(
+    (option) => option.visual_template === normalizedTemplate
+  );
+}
+
+export async function selectChartType(runId: string, selectedTemplate: string) {
+  const run = requireRun(await readRun(runId));
+  const template = selectedTemplate.trim();
+
+  if (!template) {
+    throw new Error('selected_template is required.');
+  }
+
+  if (!ALLOWED_VISUAL_TEMPLATES.has(template)) {
+    throw new Error(`Unsupported chart template: ${template}.`);
+  }
+
+  const option = findChartTypeOption(run, template);
+  const knownOptions = run.selected_candidate?.chart_type_options ?? [];
+  if (knownOptions.length > 0 && !option) {
+    throw new Error('Selected chart template was not found on this run.');
+  }
+
+  return writeRun({
+    ...run,
+    status: 'generating',
+    selected_chart_template: template,
+    selected_chart_rationale: option?.rationale || '',
+    generation_steps: run.generation_steps.map((step) =>
+      step.id === 'awaiting_chart_type_selection'
+        ? { ...step, status: 'done', microStatus: undefined }
+        : step
+    ),
+    logs: [
+      ...run.logs,
+      { at: now(), message: `Selected chart type: ${template}${option?.rationale ? ` - ${option.rationale}` : ''}` },
+    ],
   });
 }
 
@@ -2209,30 +2350,35 @@ export async function generatePost(runId: string) {
       throw new Error('No selected candidate to generate from.');
     }
     const selectedCandidate = run.selected_candidate;
-    const endpoint = normalizeCrustdataEndpoint(selectedCandidate.crustdata_query.endpoint);
-    if (!isUsableCrustdataEndpoint(endpoint)) {
-      throw new Error(`Crustdata endpoint ${endpoint} has not been verified for this API key.`);
-    }
 
-    run = await writeRun({ ...run, status: 'generating', error: undefined });
-    run = await writeRun(updateStep(run, 'fetching_data', 'running', 'Calling Crustdata API.'));
+    if (!run.data || !run.caption) {
+      const endpoint = normalizeCrustdataEndpoint(selectedCandidate.crustdata_query.endpoint);
+      if (!isUsableCrustdataEndpoint(endpoint)) {
+        throw new Error(`Crustdata endpoint ${endpoint} has not been verified for this API key.`);
+      }
 
-    const rawData = await callCrustdata(
-      endpoint,
-      selectedCandidate.crustdata_query.params
-    );
+      run = await writeRun({ ...run, status: 'generating', error: undefined });
+      run = await writeRun(updateStep(run, 'fetching_data', 'running', 'Calling Crustdata API.'));
 
-    await writeRunArtifact(runId, 'crustdata-response.json', JSON.stringify(rawData, null, 2));
-    if (!hasCrustdataUsableData(endpoint, rawData)) {
-      throw new Error(noUsableDataMessage(endpoint));
-    }
+      const rawData = await callCrustdata(
+        endpoint,
+        selectedCandidate.crustdata_query.params
+      );
 
-    run = await writeRun(updateStep(run, 'fetching_data', 'done'));
-    run = await writeRun(updateStep(run, 'finalizing_data', 'running', 'Asking Claude to normalize chart data.'));
+      await writeRunArtifact(runId, 'crustdata-response.json', JSON.stringify(rawData, null, 2));
+      if (!hasCrustdataUsableData(endpoint, rawData)) {
+        throw new Error(noUsableDataMessage(endpoint));
+      }
 
-    const baseKnowledge = await readRuntimeKnowledge(['base']);
-    const shapedResponse = await callLoggedAnthropicFull('stage_5_caption', runId, `Selected candidate:
+      run = await writeRun(updateStep(run, 'fetching_data', 'done'));
+      run = await writeRun(updateStep(run, 'finalizing_data', 'running', 'Asking Claude to normalize chart data.'));
+
+      const baseKnowledge = await readRuntimeKnowledge(['base']);
+      const shapedResponse = await callLoggedAnthropicFull('stage_5_caption', runId, `Selected candidate:
 ${JSON.stringify(selectedCandidate, null, 2)}
+
+Chart type options from Stage 2:
+${JSON.stringify(selectedCandidate.chart_type_options ?? [], null, 2)}
 
 Raw Crustdata response:
 ${JSON.stringify(rawData, null, 2)}
@@ -2242,7 +2388,7 @@ Normalize the raw response into chart-ready post data and write the social capti
 Requirements:
 - Use only data that is present in the raw Crustdata response.
 - If the original candidate cannot be supported exactly, adjust the title, subtitle, chart data, and caption to what the returned data actually supports.
-- Shape the chart data for the selected visual_template:
+- Shape the chart data for the rank-1 recommended visual_template for now. The user may choose one of the other chart_type_options before image generation, so keep the normalized data compact and compatible with the stated options when possible.
   - ranked_horizontal_bar, ranked_horizontal_bar_with_icons, vertical_bar_comparison, diverging_horizontal_bar: use rows[{label,value,color?}]. Sort ranked rows descending; keep signed values for diverging rows.
   - single_line_timeseries and annotated_line_timeseries: use points[{date,value}] and optional annotations[{date,label,sublabel?}].
   - single_line_timeseries_with_annotations: use points[{date,value}] plus annotations[{date,label,sublabel?}].
@@ -2250,36 +2396,66 @@ Requirements:
   - stacked_horizontal_bar and donut_chart: use segments[{label,value,count?,percent?,color?}] plus total_annotation or donut_hole_total/donut_hole_label as appropriate.
   - slope_chart: use entities[{entity,brand_color_hex?,start_value,end_value}] plus start_time_label and end_time_label.
   - scatter_plot: use entities[{entity,brand_color_hex?,x,y}] plus x_axis_label and y_axis_label.
+- For ratio/efficiency/per-X questions, compute the derived ratio from the raw metrics before writing chart data. The chart data must include the computed ratios as the primary values, not just the raw numerator and denominator.
 - Include a compact rows summary when it is natural, but do not collapse multi-line, slope, scatter, or segment data into rows only.
 - Keep all numeric series compact and directly renderable by the selected visual template.
 - Use "Data from: Crustdata" as the footer unless the runtime knowledge requires a more specific Crustdata attribution.
 - Write a 2-3 sentence caption in Crustdata's voice with a clear hook and the key data takeaway.
 - Submit the result through the submit_generated_post tool.`, {
-      system: cachedRuntimeSystem(
-        baseKnowledge,
-        ['base'],
-        'You are Stage 5 of Newsroom: normalize Crustdata API output into chart-ready post data and a caption.'
-      ),
-      maxTokens: 2048,
-      temperature: 0.1,
-      tools: generatedPostTool('Submit chart-ready post data and the caption for the selected Crustdata candidate.'),
-      toolChoice: { type: 'tool', name: GENERATED_POST_TOOL_NAME },
-    });
+        system: cachedRuntimeSystem(
+          baseKnowledge,
+          ['base'],
+          'You are Stage 5 of Newsroom: normalize Crustdata API output into chart-ready post data and a caption.'
+        ),
+        maxTokens: 2048,
+        temperature: 0.1,
+        tools: generatedPostTool('Submit chart-ready post data and the caption for the selected Crustdata candidate.'),
+        toolChoice: { type: 'tool', name: GENERATED_POST_TOOL_NAME },
+      });
 
-    const shaped = await getGeneratedPostToolInput(
-      'stage_5_caption',
-      runId,
-      shapedResponse.response
-    );
+      const shaped = await getGeneratedPostToolInput(
+        'stage_5_caption',
+        runId,
+        shapedResponse.response
+      );
 
-    await writeRunArtifact(runId, 'data.json', JSON.stringify(shaped.data, null, 2));
-    run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
+      await writeRunArtifact(runId, 'data.json', JSON.stringify(shaped.data, null, 2));
+      run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
+    }
+
+    if (!run.selected_chart_template) {
+      run = await writeRun(
+        updateStep(
+          run,
+          'awaiting_chart_type_selection',
+          'running',
+          'Pick a chart type to continue.'
+        )
+      );
+      return writeRun({
+        ...run,
+        status: 'awaiting_chart_type_selection',
+        logs: [...run.logs, { at: now(), message: 'Data finalized. Awaiting chart-type selection.' }],
+      });
+    }
+
+    const selectedTemplate =
+      run.selected_chart_template ||
+      selectedCandidate.visual_template ||
+      selectedCandidate.matched_visual ||
+      '';
+    if (!run.data) {
+      throw new Error('No chart-ready data exists for image generation.');
+    }
+
+    run = await writeRun({ ...run, status: 'generating', error: undefined });
+    run = await writeRun(updateStep(run, 'awaiting_chart_type_selection', 'done'));
     run = await writeRun(updateStep(run, 'generating_image', 'running', 'Generating the post image.'));
 
     const imageArtifact = await createPostImageArtifact(
       runId,
-      shaped.data,
-      selectedCandidate.visual_template || selectedCandidate.matched_visual || ''
+      run.data,
+      selectedTemplate
     );
 
     return writeRun({
@@ -2344,7 +2520,10 @@ Requirements:
     const imageArtifact = await createPostImageArtifact(
       runId,
       revised.data,
-      run.selected_candidate?.visual_template || run.selected_candidate?.matched_visual || ''
+      run.selected_chart_template ||
+        run.selected_candidate?.visual_template ||
+        run.selected_candidate?.matched_visual ||
+        ''
     );
 
     return writeRun({
@@ -2391,6 +2570,7 @@ export async function saveRun(runId: string) {
 
   const usedTemplate =
     saved.visual_template?.trim() ||
+    saved.selected_chart_template?.trim() ||
     saved.selected_candidate?.visual_template?.trim() ||
     saved.selected_candidate?.matched_visual?.trim() ||
     '';

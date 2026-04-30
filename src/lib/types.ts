@@ -3,6 +3,7 @@ export type RunStatus =
   | 'discovering'
   | 'no_matches'
   | 'awaiting_selection'
+  | 'awaiting_chart_type_selection'
   | 'generating'
   | 'ready'
   | 'saved'
@@ -39,15 +40,24 @@ export interface CandidateSpec {
     params: Record<string, unknown>;
   };
   visual_template: string;
+  chart_type_options?: ChartTypeOption[];
   expected_data_shape?: string;
 }
 
 export interface GenerationStep {
-  id: 'fetching_data' | 'finalizing_data' | 'generating_image';
+  id: 'fetching_data' | 'finalizing_data' | 'awaiting_chart_type_selection' | 'generating_image';
   title: string;
   description: string;
   status: StepStatus;
   microStatus?: string;
+}
+
+export interface ChartTypeOption {
+  rank: number;
+  visual_template: string;
+  rationale: string;
+  data_preview: string;
+  suitability_score: number;
 }
 
 export interface ChartDatum {
@@ -160,6 +170,8 @@ export interface RunState {
   generation_steps: GenerationStep[];
   data?: GeneratedPostData;
   caption?: string;
+  selected_chart_template?: string;
+  selected_chart_rationale?: string;
   image_path?: string;
   image_filename?: string;
   image_mime_type?: string;

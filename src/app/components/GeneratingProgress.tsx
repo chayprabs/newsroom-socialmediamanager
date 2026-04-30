@@ -30,6 +30,8 @@ export function GeneratingProgress() {
           setRun(data.run);
           if (data.run.status === 'ready') {
             router.replace(`/review?runId=${runId}`);
+          } else if (data.run.status === 'awaiting_chart_type_selection') {
+            router.replace(`/runs/${runId}/chart-type`);
           }
         }
       })
@@ -39,6 +41,8 @@ export function GeneratingProgress() {
   useEffect(() => {
     if (run?.status === 'ready') {
       router.replace(`/review?runId=${run.run_id}`);
+    } else if (run?.status === 'awaiting_chart_type_selection') {
+      router.replace(`/runs/${run.run_id}/chart-type`);
     }
   }, [router, run]);
 
@@ -119,6 +123,27 @@ export function GeneratingProgress() {
                           {step.microStatus}
                         </p>
                       )}
+                      {step.id === 'awaiting_chart_type_selection' && step.status === 'running' ? (
+                        <button
+                          type="button"
+                          onClick={() => router.push(`/runs/${run.run_id}/chart-type`)}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: '#000',
+                            cursor: 'pointer',
+                            fontSize: '12px',
+                            fontWeight: 500,
+                            marginTop: '8px',
+                            padding: 0,
+                            textDecoration: 'underline',
+                            textDecorationColor: '#BBBBBB',
+                            textUnderlineOffset: '3px',
+                          }}
+                        >
+                          Pick a chart type to continue -&gt;
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 ))}

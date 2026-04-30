@@ -1,4 +1,4 @@
-import type { CandidateSpec, TemplateDiversityCheck } from '../types';
+import type { CandidateSpec, ChartTypeOption, TemplateDiversityCheck } from '../types';
 import { buildSteeringContextBlock, type ScoredCandidate } from './scoreCandidates';
 
 export type ReframedCandidate = ScoredCandidate & {
@@ -11,6 +11,7 @@ export type ReframedCandidate = ScoredCandidate & {
     params?: Record<string, unknown>;
   };
   visual_template?: string;
+  chart_type_options?: ChartTypeOption[];
   expected_data_shape?: string;
 };
 
@@ -54,6 +55,8 @@ export type VisualTemplateId = (typeof VISUAL_TEMPLATE_IDS)[number];
  * so this is intentionally aggressive.
  */
 export const STAGE_2_DIVERSITY_RULE = `Diversity rule for visual_template selection:
+For every feasible candidate, return chart_type_options with exactly 3 ranked options. The legacy candidate.visual_template field MUST mirror chart_type_options[0].visual_template so older diversity checks still have a single rank-1 template to inspect.
+
 When you produce the top 3 reframed candidates, the three candidates MUST collectively represent at least 2 distinct visual_template values. Surfacing 3 candidates that all map to the same visual_template (e.g., all three using ranked_horizontal_bar) is forbidden — even if all three trends are technically ranking-shaped.
 
 If the candidate pool contains only ranking-shaped trends, you must:
@@ -84,7 +87,7 @@ Accountability: when you call submit_reframed_candidates, you MUST also fill the
  * sections 7.7-7.13 — keep them in sync.
  */
 const VISUAL_TEMPLATE_GUIDE = `Visual-template selection guide (pick the template that fits the data shape, not the most familiar one):
-- ranked_horizontal_bar: ranked categories of the SAME type with all-positive values (top-N destinations, hires, role counts).
+- ranked_horizontal_bar: ranked categories of the SAME type with all-positive values (top-N destinations, hires, role counts). Also use for derived ratios when the question asks who is most efficient or asks for highest X per Y; compute metric_A / metric_B and rank the ratio.
 - ranked_horizontal_bar_with_icons: same as ranked_horizontal_bar but each row is a recognizable named brand and an icon adds value.
 - vertical_bar_comparison: 3-5 distinct competitors compared on ONE metric. Few categories, snapshot.
 - single_line_timeseries: ONE entity, ONE metric, over time. No notable inflection events.
@@ -95,14 +98,15 @@ const VISUAL_TEMPLATE_GUIDE = `Visual-template selection guide (pick the templat
 - stacked_horizontal_bar: COMPOSITION of a single whole — shares of one entity (where employees came from, revenue mix). Sums to 100%.
 - donut_chart: geographic or categorical distribution where the WHOLE matters and the total count is the focal point. 3-8 segments.
 - slope_chart: BEFORE-and-AFTER comparison on ONE metric across several entities, between EXACTLY two time points. Rank changes are the story.
-- scatter_plot: relationship between TWO metrics across multiple entities (e.g., headcount vs revenue/employee). Each entity is one point.
+- scatter_plot: relationship between TWO INDEPENDENT METRICS across multiple entities when the user asks about correlation patterns. Do not use for efficiency, productivity, "more with less", or highest X per Y questions.
 - event_effect_multi_panel_line: special-case landscape format. Do NOT auto-select; only use when the candidate explicitly requires pre/post comparison across 3+ entities sharing the same event.
 
 Hard rules:
 - Values can be negative -> diverging_horizontal_bar, NOT ranked_horizontal_bar.
 - Two time points exactly -> slope_chart, NOT multi_line_timeseries.
 - One whole split into shares -> stacked_horizontal_bar or donut_chart, NOT ranked_horizontal_bar.
-- Two metrics on the same entities -> scatter_plot.
+- Two independent metrics on the same entities and a correlation question -> scatter_plot.
+- Ratio/efficiency/per-X question -> compute the ratio and use ranked_horizontal_bar; scatter_plot MUST NOT appear in any chart_type_options for that candidate.
 - Many entities over time -> multi_line_timeseries (max 5) instead of stacking single_line_timeseries posts.`;
 
 function formatRecentTemplatesBlock(recentTemplates: string[]) {
@@ -164,6 +168,11 @@ Rules:
 - For /job/search count posts, prefer limit: 0 plus count/group_by aggregations.
 - For row-returning search posts, request at least 5 rows.
 - visual_template MUST be exactly one of: ${VISUAL_TEMPLATE_IDS.join(', ')}. Do not invent variants like bar, horizontal_bar, ranked_horizontal_bar_with_left_logos, or line_chart.
+- For every feasible candidate, return exactly 3 chart_type_options ranked by suitability. Each option must include rank, visual_template, rationale, data_preview, and suitability_score. The rank-1 option must also be copied into the legacy visual_template field.
+- Think about the user's actual question first: what would they want to see? Then identify the data shape that answers it, and only then choose chart types.
+- The 3 chart_type_options must all plausibly fit the candidate. Option 1 should be strongest, but options 2 and 3 must be viable alternatives, not strawmen. The user may prefer a different visual style.
+- The 3 chart_type_options should span at least 2 distinct visual styles when possible.
+- If the candidate is a ratio/efficiency/per-X question matching ratio_efficiency_comparison, scatter_plot MUST NOT appear in any of the 3 chart_type_options. Compute the ratio client-side after raw data is fetched and preview/rank the ratio, not the raw inputs.
 - Do not pick event_effect_multi_panel_line unless the candidate explicitly requires pre/post comparison across 3+ entities sharing the same event type — it is special-case only.
 - Apply the diversity rule from the system prompt: at most ONE candidate may use ranked_horizontal_bar across the surfaced top 3.
 - Do not use autocomplete endpoints as final post data unless the candidate is specifically about valid filter-value suggestions.
@@ -207,6 +216,7 @@ export function toCandidateSpec(candidate: ReframedCandidate): CandidateSpec {
       params: candidate.crustdata_query?.params || {},
     },
     visual_template: candidate.visual_template || candidate.matched_visual || '',
+    chart_type_options: candidate.chart_type_options,
     expected_data_shape: candidate.expected_data_shape,
   };
 }

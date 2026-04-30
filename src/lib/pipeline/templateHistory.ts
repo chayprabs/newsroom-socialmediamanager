@@ -44,6 +44,7 @@ export async function getRecentTemplates(maxRuns = 5): Promise<string[]> {
   for (const run of savedRuns) {
     const template =
       run.visual_template?.trim() ||
+      run.selected_chart_template?.trim() ||
       run.selected_candidate?.visual_template?.trim() ||
       '';
     if (template) newestFirst.push(template);

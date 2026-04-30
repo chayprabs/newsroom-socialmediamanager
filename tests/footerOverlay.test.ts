@@ -44,6 +44,14 @@ async function makeFooterAsset(filePath: string) {
   await sharp(Buffer.from(svg)).png().toFile(filePath);
 }
 
+async function readPixel(filePath: string, left: number, top: number) {
+  const pixel = await sharp(filePath)
+    .extract({ left, top, width: 1, height: 1 })
+    .raw()
+    .toBuffer();
+  return Array.from(pixel);
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
 });
@@ -62,9 +70,13 @@ describe('applyFooterOverlay', () => {
       exportSize: '1080x1350',
     });
     const metadata = await sharp(outputPath).metadata();
+    const debugPath = path.join(dir, 'debug', 'post_base_with_ai.png');
+    const debugMetadata = await sharp(debugPath).metadata();
 
     expect(metadata.width).toBe(1080);
     expect(metadata.height).toBe(1350);
+    expect(debugMetadata.width).toBe(1080);
+    expect(debugMetadata.height).toBe(1350);
     expect(result.footerSource).toBe('asset');
     expect(result.appliedAt.y + result.appliedAt.height).toBe(1350);
     expect(result.warnings).toEqual([]);
@@ -119,7 +131,7 @@ describe('applyFooterOverlay', () => {
     expect(result.appliedAt.y + result.appliedAt.height).toBe(1000);
   });
 
-  it('clears leaked raw-image content behind the deterministic footer band', async () => {
+  it('keeps the footer reserve lavender before and after footer compositing', async () => {
     const dir = await makeTempDir();
     const rawPath = path.join(dir, 'raw.png');
     const outputPath = path.join(dir, 'post.png');
@@ -131,11 +143,9 @@ describe('applyFooterOverlay', () => {
       footerAssetPath: footerPath,
       exportSize: '1080x1350',
     });
-    const pixel = await sharp(outputPath)
-      .extract({ left: 10, top: 1340, width: 1, height: 1 })
-      .raw()
-      .toBuffer();
+    const debugPath = path.join(dir, 'debug', 'post_base_with_ai.png');
 
-    expect(Array.from(pixel)).toEqual([232, 230, 245, 255]);
+    expect(await readPixel(debugPath, 10, 1340)).toEqual([232, 230, 245, 255]);
+    expect(await readPixel(outputPath, 10, 1340)).toEqual([232, 230, 245, 255]);
   });
 });

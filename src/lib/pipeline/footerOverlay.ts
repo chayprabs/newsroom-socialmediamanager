@@ -14,7 +14,8 @@ const DEFAULT_FOOTER_ASSET_PATH = path.join(
   'brand',
   'crustdata-footer.png'
 );
-const LAVENDER_BACKGROUND = '#E8E6F5';
+const LAVENDER_BACKGROUND = { r: 232, g: 230, b: 245, alpha: 1 };
+const BASE_WITH_AI_DEBUG_FILENAME = 'post_base_with_ai.png';
 
 export type FooterOverlayOptions = {
   footerAssetPath?: string;
@@ -83,18 +84,9 @@ function svgTextOnlyFooter() {
   );
 }
 
-function footerBackgroundBand(width: number, height: number) {
-  return Buffer.from(
-    `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">
-      <rect width="${width}" height="${height}" fill="${LAVENDER_BACKGROUND}"/>
-    </svg>`,
-    'utf8'
-  );
-}
-
 async function buildFallbackFooter(width: number) {
   return sharp(svgTextOnlyFooter())
-    .resize({ width })
+    .resize({ width, kernel: sharp.kernel.lanczos3, fastShrinkOnLoad: false })
     .png()
     .toBuffer({ resolveWithObject: true });
 }
@@ -113,9 +105,20 @@ async function loadFooterAsset(footerAssetPath: string, width: number, warnings:
   }
 
   return sharp(footerAssetPath, { failOn: 'none' })
-    .resize({ width })
+    .resize({ width, kernel: sharp.kernel.lanczos3, fastShrinkOnLoad: false })
     .png()
     .toBuffer({ resolveWithObject: true });
+}
+
+function lavenderCanvas(width: number, height: number) {
+  return sharp({
+    create: {
+      width,
+      height,
+      channels: 4,
+      background: LAVENDER_BACKGROUND,
+    },
+  });
 }
 
 export async function applyFooterOverlay(
@@ -164,20 +167,33 @@ export async function applyFooterOverlay(
 
   const footerHeight = footer.info.height;
   const y = Math.max(0, exportDimensions.height - footerHeight);
+  const aiTargetHeight = Math.max(1, y);
 
   try {
-    await fs.mkdir(path.dirname(outputImagePath), { recursive: true });
-    await sharp(rawImagePath, { failOn: 'none' })
-      .resize(exportDimensions.width, exportDimensions.height, {
+    const outputDir = path.dirname(outputImagePath);
+    const debugDir = path.join(outputDir, 'debug');
+    await fs.mkdir(debugDir, { recursive: true });
+
+    const aiImage = await sharp(rawImagePath, { failOn: 'none' })
+      .resize(exportDimensions.width, aiTargetHeight, {
         fit: 'cover',
         position: 'top',
+        kernel: sharp.kernel.lanczos3,
+        fastShrinkOnLoad: false,
       })
-      .flatten({ background: LAVENDER_BACKGROUND })
-      .composite([
-        { input: footerBackgroundBand(exportDimensions.width, footerHeight), left: 0, top: y },
-        { input: footer.data, left: 0, top: y },
-      ])
       .png()
+      .toBuffer();
+
+    const baseWithAi = await lavenderCanvas(exportDimensions.width, exportDimensions.height)
+      .composite([{ input: aiImage, left: 0, top: 0 }])
+      .png({ compressionLevel: 9, adaptiveFiltering: true })
+      .toBuffer();
+
+    await fs.writeFile(path.join(debugDir, BASE_WITH_AI_DEBUG_FILENAME), baseWithAi);
+
+    await sharp(baseWithAi)
+      .composite([{ input: footer.data, left: 0, top: y }])
+      .png({ compressionLevel: 9, adaptiveFiltering: true })
       .toFile(outputImagePath);
   } catch (error) {
     console.error('Stage 4c footer overlay failed.', error);
