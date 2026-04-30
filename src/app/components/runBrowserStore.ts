@@ -3,6 +3,7 @@
 import type { RunState } from '@/lib/types';
 
 const RUN_STORAGE_PREFIX = 'newsroom:run:';
+const CHART_TYPE_STORAGE_PREFIX = 'newsroom:chart-type:';
 
 function storageTargets() {
   if (typeof window === 'undefined') return [];
@@ -13,13 +14,21 @@ function runStorageKey(runId: string) {
   return `${RUN_STORAGE_PREFIX}${runId}`;
 }
 
+function chartTypeStorageKey(runId: string) {
+  return `${CHART_TYPE_STORAGE_PREFIX}${runId}`;
+}
+
 function clearOtherRuns(storage: Storage, runId: string) {
   const keepKey = runStorageKey(runId);
+  const keepChartTypeKey = chartTypeStorageKey(runId);
   const keysToRemove: string[] = [];
 
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
-    if (key?.startsWith(RUN_STORAGE_PREFIX) && key !== keepKey) {
+    if (
+      (key?.startsWith(RUN_STORAGE_PREFIX) && key !== keepKey) ||
+      (key?.startsWith(CHART_TYPE_STORAGE_PREFIX) && key !== keepChartTypeKey)
+    ) {
       keysToRemove.push(key);
     }
   }
@@ -80,4 +89,35 @@ export function storeRun(run: RunState | null) {
 export function requestRunSnapshot(runId: string | null, run: RunState | null) {
   const snapshot = run ?? getStoredRun(runId);
   return snapshot ? withoutInlineImage(snapshot) : undefined;
+}
+
+export function getPendingChartType(runId: string | null) {
+  if (!runId) return '';
+
+  for (const storage of storageTargets()) {
+    const value = storage.getItem(chartTypeStorageKey(runId));
+    if (value) return value;
+  }
+
+  return '';
+}
+
+export function setPendingChartType(runId: string | null, chartType: string) {
+  if (!runId) return;
+
+  for (const storage of storageTargets()) {
+    try {
+      storage.setItem(chartTypeStorageKey(runId), chartType);
+    } catch {
+      // Best-effort only. The selected chart type also travels in the URL.
+    }
+  }
+}
+
+export function clearPendingChartType(runId: string | null) {
+  if (!runId) return;
+
+  for (const storage of storageTargets()) {
+    storage.removeItem(chartTypeStorageKey(runId));
+  }
 }

@@ -4,6 +4,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { RunState } from '@/lib/types';
 import { getStoredRun, storeRun } from './runBrowserStore';
 
+function isAtLeastAsFresh(current: RunState | null, incoming: RunState) {
+  if (!current || current.run_id !== incoming.run_id) return true;
+  return incoming.updated_at.localeCompare(current.updated_at) >= 0;
+}
+
 export function useRunState(runId: string | null) {
   const [run, setRun] = useState<RunState | null>(() => getStoredRun(runId));
   const [isLoading, setIsLoading] = useState(Boolean(runId));
@@ -34,11 +39,14 @@ export function useRunState(runId: string | null) {
           throw new Error('Run could not be loaded.');
         }
         const data = await response.json();
-        if (isMounted) {
-          runRef.current = data.run;
-          setRun(data.run);
-          storeRun(data.run);
-          setError('');
+        if (isMounted && data.run) {
+          const incomingRun = data.run as RunState;
+          if (isAtLeastAsFresh(runRef.current, incomingRun)) {
+            runRef.current = incomingRun;
+            setRun(incomingRun);
+            storeRun(incomingRun);
+            setError('');
+          }
         }
       } catch (loadError) {
         if (isMounted && !runRef.current) {
@@ -56,7 +64,7 @@ export function useRunState(runId: string | null) {
     const events = new EventSource(`/api/runs/${runId}/stream`);
     events.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.run && isMounted) {
+      if (data.run && isMounted && isAtLeastAsFresh(runRef.current, data.run)) {
         runRef.current = data.run;
         setRun(data.run);
         storeRun(data.run);

@@ -30,11 +30,13 @@ export async function readJsonBody<T extends RunSnapshotBody>(request: Request):
 
 export async function ensureRunFromSnapshot(runId: string, snapshot: unknown) {
   const existingRun = await readRun(runId);
-  if (existingRun) return existingRun;
-
   if (!isRunSnapshot(snapshot, runId)) {
-    return null;
+    return existingRun;
   }
 
-  return writeRun(snapshot);
+  if (!existingRun || snapshot.updated_at.localeCompare(existingRun.updated_at) > 0) {
+    return writeRun(snapshot);
+  }
+
+  return existingRun;
 }

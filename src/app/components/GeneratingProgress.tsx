@@ -7,12 +7,13 @@ import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
 import { DebugBundle } from './DebugBundle';
-import { requestRunSnapshot } from './runBrowserStore';
+import { clearPendingChartType, getPendingChartType, requestRunSnapshot } from './runBrowserStore';
 
 export function GeneratingProgress() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const runId = searchParams?.get('runId') ?? null;
+  const chartType = searchParams?.get('chartType') || getPendingChartType(runId);
   const { run, setRun, isLoading, error, setError } = useRunState(runId);
   const hasStartedGeneration = useRef(false);
 
@@ -22,46 +23,74 @@ export function GeneratingProgress() {
 
   useEffect(() => {
     if (!runId || hasStartedGeneration.current || (isLoading && !run)) return;
-    if (run?.status === 'ready' || run?.status === 'awaiting_chart_type_selection' || run?.status === 'failed') {
+    if (run?.status === 'ready' || run?.status === 'failed') {
       return;
     }
+    if (run?.status === 'awaiting_chart_type_selection' && !chartType) return;
 
     hasStartedGeneration.current = true;
 
-    fetch(`/api/runs/${runId}/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ run: requestRunSnapshot(runId, run) }),
-    })
-      .then(async (response) => {
-        const data = await response.json().catch(() => ({}));
+    const startGeneration = async () => {
+      let currentRun = run;
+
+      if (chartType && (!currentRun?.selected_chart_template || currentRun.status === 'awaiting_chart_type_selection')) {
+        const chartTypeResponse = await fetch(`/api/runs/${runId}/chart-type`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            selected_template: chartType,
+            run: requestRunSnapshot(runId, currentRun),
+          }),
+        });
+        const chartTypeData = await chartTypeResponse.json().catch(() => ({}));
+        if (!chartTypeResponse.ok) {
+          throw new Error(
+            typeof chartTypeData.error === 'string' ? chartTypeData.error : 'Could not select chart type.'
+          );
+        }
+        if (chartTypeData.run) {
+          currentRun = chartTypeData.run;
+          setRun(chartTypeData.run);
+        }
+      }
+
+      const response = await fetch(`/api/runs/${runId}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run: requestRunSnapshot(runId, currentRun) }),
+      });
+      const data = await response.json().catch(() => ({}));
         if (!response.ok) {
           throw new Error(typeof data.error === 'string' ? data.error : 'Generation failed.');
         }
-        return data;
-      })
+      return data;
+    };
+
+    startGeneration()
       .then((data) => {
         if (data.run) {
           setRun(data.run);
           if (data.run.status === 'ready') {
+            clearPendingChartType(runId);
             router.replace(`/review?runId=${runId}`);
           } else if (data.run.status === 'awaiting_chart_type_selection') {
-            router.replace(`/runs/${runId}/chart-type`);
+            if (!chartType) router.replace(`/runs/${runId}/chart-type`);
           }
         }
       })
       .catch((generationError) =>
         setError(generationError instanceof Error ? generationError.message : 'Generation failed.')
       );
-  }, [isLoading, router, run, runId, setError, setRun]);
+  }, [chartType, isLoading, router, run, runId, setError, setRun]);
 
   useEffect(() => {
     if (run?.status === 'ready') {
+      clearPendingChartType(run.run_id);
       router.replace(`/review?runId=${run.run_id}`);
-    } else if (run?.status === 'awaiting_chart_type_selection') {
+    } else if (run?.status === 'awaiting_chart_type_selection' && !chartType) {
       router.replace(`/runs/${run.run_id}/chart-type`);
     }
-  }, [router, run]);
+  }, [chartType, router, run]);
 
   const handleCancel = () => {
     router.push('/dashboard');

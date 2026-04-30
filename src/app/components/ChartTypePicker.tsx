@@ -7,7 +7,7 @@ import type { ChartDatum, ChartEntitySeries, ChartTypeOption, GeneratedPostData 
 import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
-import { requestRunSnapshot } from './runBrowserStore';
+import { getPendingChartType, requestRunSnapshot, setPendingChartType } from './runBrowserStore';
 
 type PreviewRow = {
   label: string;
@@ -369,7 +369,7 @@ export function ChartTypePicker() {
   const router = useRouter();
   const runId = params?.id ?? null;
   const { run, setRun, isLoading, error, setError } = useRunState(runId);
-  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [selectedTemplate, setSelectedTemplate] = useState(() => getPendingChartType(runId));
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
@@ -402,6 +402,8 @@ export function ChartTypePicker() {
   const handleGeneratePost = async () => {
     if (!runId || !selectedTemplate || isSubmitting) return;
     setIsSubmitting(true);
+    setPendingChartType(runId, selectedTemplate);
+
     try {
       const response = await fetch(`/api/runs/${runId}/chart-type`, {
         method: 'POST',
@@ -413,7 +415,7 @@ export function ChartTypePicker() {
         throw new Error(typeof data.error === 'string' ? data.error : 'Could not select chart type.');
       }
       if (data.run) setRun(data.run);
-      router.push(`/generating-progress?runId=${runId}`);
+      router.push(`/generating-progress?runId=${runId}&chartType=${encodeURIComponent(selectedTemplate)}`);
     } catch (chartTypeError) {
       setError(chartTypeError instanceof Error ? chartTypeError.message : 'Could not select chart type.');
       setIsSubmitting(false);
@@ -462,7 +464,10 @@ export function ChartTypePicker() {
                       key={`${option.rank}-${option.visual_template}`}
                       type="button"
                       className="bg-white text-left transition-all"
-                      onClick={() => setSelectedTemplate(option.visual_template)}
+                      onClick={() => {
+                        setSelectedTemplate(option.visual_template);
+                        setPendingChartType(runId, option.visual_template);
+                      }}
                       style={{
                         border: isSelected ? '1.5px solid #000' : '0.5px solid #E5E5E5',
                         borderRadius: '12px',
