@@ -36,7 +36,7 @@ source_priority:
   explicitly_excluded: "LinkedIn reposts by non-founders unless the uploaded screenshot itself is included in the primary corpus."
 ```
 
-> **Runtime note:** This file is loaded into context for Sonnet calls in Stage 1 (discovery), Stage 2 scoring, Stage 2 reframing, and Stage 5 caption writing/regeneration. Anthropic prompt caching is enabled on this prefix to keep costs manageable.
+> **Runtime note:** This file is loaded into context for Sonnet calls in Stage 1 (discovery), Stage 2 scoring, Stage 2 reframing, and Stage 5 caption writing/regeneration. Anthropic prompt caching is enabled on this prefix to keep costs manageable. The `ratio_efficiency_comparison` archetype below guides Stage 2 chart-type selection toward ranked bars of computed ratios instead of scatter plots when efficiency is the question.
 >
 > **Stage 4a (image-prompt construction) does NOT load this file.** Image generation reads `design.md` only — it needs the visual specification, not the editorial DNA. Anything that must influence the rendered image (brand spelling, footer text, color anchors, headline length limits) is mirrored into `design.md` or enforced by the upstream editorial agents that DO read this file.
 >
@@ -687,7 +687,73 @@ weaknesses:
   - "Not present in uploaded image corpus; treat as weak signal until visual source is acquired."
 ```
 
-### 2.9 `topic_archetype: workforce_macro_role_split`
+### 2.9 `topic_archetype: ratio_efficiency_comparison`
+
+```yaml
+id: ratio_efficiency_comparison
+name: "Efficiency / ratio comparison"
+confidence: moderate
+status: "supported_v1"
+description: |
+  The user is asking who does more with less, who is most efficient, or
+  comparing two metrics where the RATIO between them is what matters,
+  not each metric independently.
+examples:
+  - "Anthropic revenue compared to employees vs other AI labs"
+  - "Which YC company has the highest ARR per founder?"
+  - "Funding raised per engineer at top AI labs"
+  - "Revenue per employee - startup leaderboard"
+data_pattern: |
+  Two raw metrics per entity (e.g., revenue and headcount), where the
+  user wants to see metric_A / metric_B as a derived ratio per entity.
+  The ratio is computed client-side after data is fetched. The chart
+  shows the RATIO, not the raw inputs.
+data_needed:
+  required:
+    - "entity set"
+    - "metric_A numerator for each entity"
+    - "metric_B denominator for each entity"
+    - "shared date/scope for both metrics"
+expected_data_shape:
+  type: "derived_ratio_ranked_categories"
+  rows: "[{entity: string, numerator: number, denominator: number, ratio: number, unit: metric_A_per_metric_B}]"
+recommended_visual: "ranked_horizontal_bar"
+visual_rationale: |
+  A ranked bar of computed ratios is dramatically more readable than
+  a scatter plot of raw values. The eye reads "Anthropic: $X per
+  employee, OpenAI: $Y per employee" instantly. Scatter plots force
+  the viewer to mentally divide y/x for every dot - they're for
+  correlation analysis, not efficiency comparisons.
+forbidden_visual: "scatter_plot"
+forbidden_visual_reason: |
+  Scatter plots show correlation between two variables. They do NOT
+  answer "who is most efficient" - they answer "is there a relationship
+  between these two variables." If the user is asking the former, use
+  a ranked bar of the ratio.
+likely_crustdata_endpoints:
+  - endpoint: "/company/search"
+    purpose: "Fetch cohorts with funding, headcount, revenue-like, founder, or company metrics."
+    mapping_confidence: "hypothesis_from_PRD"
+  - endpoint: "/company/enrich"
+    purpose: "Fetch known-company metrics when the comparison set is explicit."
+    mapping_confidence: "hypothesis_from_PRD"
+api_feasibility: likely_if_both_metrics_available
+visual_templates:
+  preferred: "ranked_horizontal_bar"
+  alternate:
+    - "vertical_bar_comparison"
+    - "ranked_horizontal_bar_with_icons"
+angle_patterns:
+  - "who_does_more_with_less"
+  - "highest_x_per_y"
+  - "efficiency_leaderboard"
+  - "revenue_per_employee"
+weaknesses:
+  - "Requires both numerator and denominator to be available on the same entity set."
+  - "The caption must name the derived unit clearly and avoid implying precision beyond the source data."
+```
+
+### 2.10 `topic_archetype: workforce_macro_role_split`
 
 ```yaml
 confidence: weak_signal
@@ -729,7 +795,7 @@ weaknesses:
   - "Requires time-period normalization."
 ```
 
-### 2.10 `topic_archetype: sensitive_competitive_incident_quantification`
+### 2.11 `topic_archetype: sensitive_competitive_incident_quantification`
 
 ```yaml
 confidence: weak_signal
@@ -945,8 +1011,9 @@ visual_convention_map:
       - "employee destinations"
       - "tool/company traffic rankings"
       - "founder lineage rankings"
+      - "computed efficiency ratios such as revenue per employee or funding per founder"
     example_source_refs: ["uploaded_image_18", "uploaded_image_20", "uploaded_image_21"]
-    chart_story: "The rank order is the story."
+    chart_story: "The rank order is the story; for efficiency questions, the computed ratio is the story."
     data_minimum: "3+ categories; best 5-11 categories"
 
   vertical_bar_comparison:
@@ -1003,10 +1070,14 @@ visual_convention_map:
 
   scatter_plot:
     use_for:
-      - "relationship between two metrics across multiple entities"
+      - "correlation between two independent metrics across multiple entities"
     example_source_refs: ["design.md section 8.11"]
     chart_story: "The correlation or outliers are the story."
-    data_minimum: "4+ entities with x/y values"
+    data_minimum: "6+ entities with x/y values"
+    do_not_use_for:
+      - "ratio or efficiency questions"
+      - "highest X per Y"
+      - "who does more with less"
 ```
 
 ### 4.1 Image-quality contract (editorial side)
@@ -1077,9 +1148,9 @@ image_quality_contract:
       max_entities: 10
       rule: "Use exactly two time points."
     scatter_plot:
-      min_entities: 4
+      min_entities: 6
       max_entities: 15
-      rule: "Use only when each entity has both x and y values."
+      rule: "Use only when each entity has both x and y values and the question is about correlation, not ratio ranking."
 
   brand_color_anchors:
     rule: "When Stage 3 assigns colors to chart rows for distinct named brands, use this anchor table. If no anchor applies, use the default purple #6B5BD9."
@@ -1118,7 +1189,7 @@ image_generation_contract:
 
   allowed_templates:
     - id: ranked_horizontal_bar
-      use_for: "Ranked categories of the same type (top-N hiring functions, employee destinations, founder lineage, traffic by tool when items are not distinct named brands)."
+      use_for: "Ranked categories of the same type (top-N hiring functions, employee destinations, founder lineage, traffic by tool when items are not distinct named brands) and computed efficiency ratios such as revenue per employee."
       data_shape: "rows[label,value], 3-12 rows."
       worked_example: "design.md section 8.1"
 
@@ -1173,7 +1244,7 @@ image_generation_contract:
       worked_example: "design.md section 8.10"
 
     - id: scatter_plot
-      use_for: "Relationship between two metrics across multiple entities."
+      use_for: "Correlation relationship between two independent metrics across multiple entities. Do not use for ratio/efficiency questions."
       data_shape: "entities[entity,x,y] plus x_axis_label and y_axis_label."
       worked_example: "design.md section 8.11"
 
@@ -1321,6 +1392,7 @@ query_template_funding_valuation:
   preferred_archetypes:
     - "talent_origin_current_team"
     - "funding_or_unicorn_distribution"
+    - "ratio_efficiency_comparison"
     - "web_traffic_timeseries_single_company"
 
 query_template_person_movement:

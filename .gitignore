@@ -20,6 +20,8 @@ node_modules/
 
 # Logs
 *.log
+.next-start-*.pid
+.next-start-*.data-dir
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

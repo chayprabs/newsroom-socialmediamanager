@@ -7,22 +7,23 @@ import { LogOut } from 'lucide-react';
 
 export function TopNav() {
   const pathname = usePathname();
+  const currentPath = pathname ?? '';
   const router = useRouter();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
 
   const isActive = (path: string) => {
     if (path === '/dashboard') {
       return (
-        pathname === '/dashboard' ||
-        pathname === '/generating' ||
-        pathname === '/generating-progress' ||
-        pathname === '/pick-idea' ||
-        pathname === '/review' ||
-        pathname.startsWith('/runs/')
+        currentPath === '/dashboard' ||
+        currentPath === '/generating' ||
+        currentPath === '/generating-progress' ||
+        currentPath === '/pick-idea' ||
+        currentPath === '/review' ||
+        currentPath.startsWith('/runs/')
       );
     }
 
-    return pathname === path;
+    return currentPath === path;
   };
   const handleSignOut = async () => {
     setIsProfileOpen(false);

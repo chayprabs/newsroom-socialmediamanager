@@ -2,21 +2,34 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { RunState, RunSummary } from '../types';
 
+const projectRoot = process.cwd();
+
 export const dataRoot = process.env.NEWSROOM_DATA_DIR
   ? path.resolve(process.env.NEWSROOM_DATA_DIR)
   : process.env.VERCEL
     ? path.join('/tmp', 'newsroom')
-    : process.cwd();
+    : projectRoot;
 
 const BASE_DIR = path.join(dataRoot, 'base');
 const DESIGN_DIR = path.join(dataRoot, 'design');
 const RUNS_DIR = path.join(dataRoot, 'runs');
-const SOURCE_DIRS = [path.join(BASE_DIR, 'source'), path.join(BASE_DIR, 'sources')];
+const PROJECT_BASE_DIR = path.join(projectRoot, 'base');
+const PROJECT_DESIGN_DIR = path.join(projectRoot, 'design');
+const SOURCE_DIRS = [
+  path.join(BASE_DIR, 'source'),
+  path.join(BASE_DIR, 'sources'),
+  path.join(PROJECT_BASE_DIR, 'source'),
+  path.join(PROJECT_BASE_DIR, 'sources'),
+];
 
 export const basePath = path.join(BASE_DIR, 'base.md');
 export const baseDefaultPath = path.join(BASE_DIR, 'default.md');
 export const designPath = path.join(DESIGN_DIR, 'design.md');
 export const designDefaultPath = path.join(DESIGN_DIR, 'default.md');
+const projectBasePath = path.join(PROJECT_BASE_DIR, 'base.md');
+const projectBaseDefaultPath = path.join(PROJECT_BASE_DIR, 'default.md');
+const projectDesignPath = path.join(PROJECT_DESIGN_DIR, 'design.md');
+const projectDesignDefaultPath = path.join(PROJECT_DESIGN_DIR, 'default.md');
 
 async function ensureDir(dir: string) {
   await fs.mkdir(dir, { recursive: true });
@@ -40,8 +53,47 @@ async function readTextFile(filePath: string) {
   }
 }
 
+async function readExistingTextFile(filePath: string) {
+  try {
+    return await fs.readFile(filePath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+async function readFirstExistingTextFile(filePaths: string[]) {
+  for (const filePath of filePaths) {
+    const content = await readExistingTextFile(filePath);
+    if (content !== null) {
+      return content;
+    }
+  }
+
+  return '';
+}
+
+function markdownReadPaths(kind: 'base' | 'design') {
+  if (kind === 'base') {
+    return [basePath, projectBasePath];
+  }
+
+  return [designPath, projectDesignPath];
+}
+
+function markdownDefaultPaths(kind: 'base' | 'design') {
+  if (kind === 'base') {
+    return [baseDefaultPath, projectBaseDefaultPath, projectBasePath];
+  }
+
+  return [designDefaultPath, projectDesignDefaultPath, projectDesignPath];
+}
+
 export async function readMarkdown(kind: 'base' | 'design') {
-  return readTextFile(kind === 'base' ? basePath : designPath);
+  return readFirstExistingTextFile(markdownReadPaths(kind));
 }
 
 export function getMarkdownPath(kind: 'base' | 'design') {
@@ -60,8 +112,7 @@ export async function writeMarkdown(kind: 'base' | 'design', content: string) {
 }
 
 export async function resetMarkdown(kind: 'base' | 'design') {
-  const defaultPath = kind === 'base' ? baseDefaultPath : designDefaultPath;
-  const content = await readTextFile(defaultPath);
+  const content = await readFirstExistingTextFile(markdownDefaultPaths(kind));
   await writeMarkdown(kind, content);
   return content;
 }

@@ -543,7 +543,7 @@ runs/             # Per‑run artifacts (state.json, image.png, prompts, logs, u
 research/         # API response cache (gitignored)
 ```
 
-Override the root with `NEWSROOM_DATA_DIR`. On Vercel, storage automatically falls back to `/tmp/newsroom`, which is **ephemeral** — so for durable production storage you'd swap `src/lib/server/storage.ts` to use Vercel Blob, KV, or your database of choice (see [Deployment](#deployment)).
+Override the root with `NEWSROOM_DATA_DIR`. On Vercel, writable storage automatically falls back to `/tmp/newsroom`, which is **ephemeral**. If `base/base.md` or `design/design.md` do not exist in that writable runtime directory yet, Newsroom reads the checked-in bundled markdown files as seeds so the Manage Base and Manage Design screens are populated on a fresh deployment. For durable production storage, swap `src/lib/server/storage.ts` to use Vercel Blob, KV, or your database of choice (see [Deployment](#deployment)).
 
 Crustdata responses are also cached locally for development under:
 
@@ -584,7 +584,7 @@ Newsroom runs cleanly on **Vercel**:
 
 > **Important:** Vercel's filesystem is read‑only outside of `/tmp`, and `/tmp` is wiped between invocations. Local filesystem storage is fine for development, but for **durable saved runs** in production you should swap `src/lib/server/storage.ts` to use Vercel Blob, KV, or your database of choice.
 
-`base/base.md` and `design/design.md` are bundled with the deploy and are read‑only on Vercel unless you wire up the same external storage.
+`base/base.md` and `design/design.md` are bundled with the deploy and used as read defaults on Vercel. In-app edits are written to `/tmp/newsroom` unless you wire up external storage, so those edits are not durable across cold starts.
 
 ---
 

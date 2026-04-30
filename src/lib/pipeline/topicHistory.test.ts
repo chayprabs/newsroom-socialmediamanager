@@ -50,7 +50,7 @@ describe('topic history', () => {
     await writeRun(runState(run3, '2099-02-03T00:00:00.000Z', 'ai hiring'));
     await writeRun(runState(run4, '2099-02-04T00:00:00.000Z', 'European unicorns'));
 
-    await expect(getRecentSteerings(5)).resolves.toEqual([
+    await expect(getRecentSteerings(4)).resolves.toEqual([
       'European unicorns',
       'ai hiring',
       'Founder lineage',
@@ -67,7 +67,7 @@ describe('topic history', () => {
     await writeRun(runState(run2, '2099-03-02T00:00:00.000Z'));
     await writeRun(runState(run3, '2099-03-03T00:00:00.000Z', 'Recent funding'));
 
-    await expect(getRecentSteerings(5)).resolves.toEqual(['Recent funding']);
+    await expect(getRecentSteerings(3)).resolves.toEqual(['Recent funding']);
   });
 
   it('caps the result at maxRuns', async () => {

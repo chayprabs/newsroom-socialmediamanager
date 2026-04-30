@@ -12,6 +12,13 @@ function formatTokenCount(value: number) {
   return new Intl.NumberFormat('en-US').format(value);
 }
 
+function formatTemplateName(template?: string): string {
+  if (!template) return '';
+  const words = template.replace(/_/g, ' ').trim().toLowerCase();
+  if (!words) return '';
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
 export function RunDetail() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
@@ -89,6 +96,31 @@ export function RunDetail() {
                     {run.steering_acknowledged?.trim() || 'Not recorded for this run.'}
                   </p>
                 </div>
+                {(() => {
+                  const chartTemplate =
+                    run.selected_chart_template ||
+                    run.visual_template ||
+                    run.selected_candidate?.visual_template ||
+                    '';
+                  const chartLabel = formatTemplateName(chartTemplate);
+                  if (!chartLabel) return null;
+
+                  return (
+                    <div style={{ marginTop: '16px', paddingTop: '16px', borderTop: '0.5px solid #E5E5E5' }}>
+                      <p style={{ fontSize: '11px', color: '#888', fontWeight: 400, marginBottom: '6px' }}>
+                        Chart type:
+                      </p>
+                      <p style={{ fontSize: '13px', fontWeight: 400, color: '#1A1A1A', lineHeight: 1.5 }}>
+                        {chartLabel}
+                      </p>
+                      {run.selected_chart_rationale?.trim() ? (
+                        <p style={{ fontSize: '12px', color: '#888', fontStyle: 'italic', lineHeight: 1.5, marginTop: '4px' }}>
+                          {run.selected_chart_rationale.trim()}
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="flex justify-center" style={{ marginBottom: '32px' }}>

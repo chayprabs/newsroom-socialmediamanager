@@ -192,7 +192,7 @@ function promptBuilderUserPrompt(data: GeneratedPostData, visualTemplate: string
   return `Chart-ready data from Stage 3:
 ${JSON.stringify(data, null, 2)}
 
-Visual template selected by Stage 2: ${visualTemplate || 'best_matching_template'}
+Visual template selected by the chart-type picker: ${visualTemplate || 'best_matching_template'}
 
 Build the final GPT-image-2 prompt now using the matching worked-example skeleton from design.md (section 8). Substitute only the headline, subtitle, data rows/points, and bar/line color assignments. Every other value is pinned and must appear verbatim. Inline the portrait layout instruction, #E8E6F5, "full bleed", "EMPTY FOOTER ZONE", "Do NOT render \"Data from:\"", "bottom 18%", "do not crop or cut off any part of the headline", and at least one relevant do_not rule transcribed verbatim from design.md section 11. Do not describe a centered safe-area crop or fixed 4:5 export frame; use the full available portrait canvas. Do not ask GPT-image-2 to render the Crustdata footer, logo, or wordmark; Stage 4c composites the real footer after generation.
 

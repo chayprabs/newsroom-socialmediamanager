@@ -43,7 +43,7 @@ template_selection_priority:
 
   - id: ranked_horizontal_bar
     section: "7.1 / 8.1"
-    use_when: "Ranked categories of the SAME type with all-positive values (top-N destinations, hires, role counts)."
+    use_when: "Ranked categories of the SAME type with all-positive values (top-N destinations, hires, role counts). Also compute and rank DERIVED RATIOS when the question is about efficiency, productivity, unit economics, or per-X metrics."
 
   - id: single_line_timeseries
     section: "7.4 / 8.2"
@@ -51,7 +51,7 @@ template_selection_priority:
 
   - id: vertical_bar_comparison
     section: "7.3 / 8.3"
-    use_when: "3-5 distinct competitors compared on ONE metric. Few categories, snapshot."
+    use_when: "3-5 distinct competitors compared on ONE metric. Few categories, snapshot. Do not use past 5 entities."
 
   - id: diverging_horizontal_bar
     section: "7.7 / 8.5"
@@ -79,7 +79,7 @@ template_selection_priority:
 
   - id: scatter_plot
     section: "7.13 / 8.11"
-    use_when: "Relationship between TWO metrics across multiple entities (e.g., headcount vs revenue/employee). Each entity is one point."
+    use_when: "Use when showing the relationship between TWO INDEPENDENT METRICS across multiple entities (e.g., 'is there a correlation between funding and headcount?'). The user is asking about correlation patterns, not which entity is most efficient."
 
   # ────────────── Variants and special cases ──────────────
 
@@ -103,7 +103,8 @@ hard_disambiguation_rules:
   - "Values can be negative -> diverging_horizontal_bar, NOT ranked_horizontal_bar."
   - "Two time points exactly -> slope_chart, NOT multi_line_timeseries."
   - "One whole split into shares -> stacked_horizontal_bar or donut_chart, NOT ranked_horizontal_bar."
-  - "Two metrics on the same entities -> scatter_plot."
+  - "Two independent metrics on the same entities and a correlation question -> scatter_plot."
+  - "Ratio, efficiency, productivity, unit economics, or highest X per Y -> compute the ratio and use ranked_horizontal_bar; do NOT use scatter_plot."
   - "Many entities over time (3-5) -> multi_line_timeseries instead of stacking single_line_timeseries posts."
 ```
 
@@ -371,14 +372,22 @@ The catalog below maps editorial archetypes to visual templates. Each template r
 confidence: strong
 supported_v1: true
 source_refs: ["uploaded_image_18", "uploaded_image_20", "uploaded_image_21"]
+use_when: "Ranked categories of the SAME type with all-positive values where rank order is the story. Compute and rank DERIVED RATIOS when the question is about efficiency, productivity, unit economics, or 'per-X' metrics. Examples: revenue per employee, funding per founder, ARR per engineer. Compute the ratio client-side after fetching raw data. The chart shows the ratio as a single bar per entity, sorted descending."
+do_not_use_when: "Values are signed changes with a meaningful zero baseline (use diverging_horizontal_bar). The story is correlation between two independent metrics (use scatter_plot). The story is composition of one whole (use stacked_horizontal_bar or donut_chart)."
 use_for:
   - "ranked category comparisons of the same type"
   - "job openings by function"
   - "employee destinations"
   - "founder/alumni lineage"
+  - "derived ratio leaderboards such as revenue per employee, funding per founder, or ARR per engineer"
 data_shape:
   required: "[{label: string, value: number}]"
   recommended_rows: "5-12"
+derived_metric_handling:
+  ratio_rule: "When the data has two metrics that need to be combined into a ratio, compute metric_A / metric_B after fetching raw data and before image generation."
+  stage_4a_prompt_rule: "Stage 4a's prompt must explicitly include the computed ratios in the chart data, not only the raw numerator and denominator."
+  output_shape: "rows[{label,value}] where value is the computed ratio; include unit_label such as '$/employee', 'ARR/founder', or 'funding/engineer'."
+  sort_order: "Sort computed ratios descending unless the question asks for lowest cost or lowest burn."
 style_notes:
   orientation: "horizontal"
   sort_order: "descending by value"
@@ -411,6 +420,8 @@ worked_example_template: "see section 8.1, with brand-per-entity overrides"
 confidence: moderate
 supported_v1: true
 source_refs: ["uploaded_image_22"]
+use_when: "Use for 3-5 distinct named entities compared on ONE metric when the visual gap is the story and labels are short enough to sit below bars."
+do_not_use_when: "Do NOT use when comparing more than 5 entities (use ranked_horizontal_bar instead - vertical bars become illegible past 5 categories due to label width). Do not use for long category names, composition, time series, or correlation questions."
 use_for:
   - "3-5 competitor comparisons"
   - "rank reversal with few categories"
@@ -434,6 +445,8 @@ worked_example_template: "see section 8.3"
 confidence: strong
 supported_v1: true
 source_refs: ["uploaded_image_17"]
+use_when: "Use for ONE entity and ONE metric over time when the trend line itself is the story and there are no competing entities or event callouts needed."
+do_not_use_when: "Do NOT use for multiple entities (use multi_line_timeseries), exactly two time points across entities (use slope_chart), static rankings (use ranked_horizontal_bar), or ratio leaderboards."
 use_for:
   - "single product/company traffic over time"
   - "growth curve / spike"
@@ -457,6 +470,8 @@ confidence: moderate
 supported_v1: true
 source_refs: ["uploaded_image_25"]
 inherits: "single_line_timeseries"
+use_when: "Use for ONE entity over time when 2-5 sharp data callouts explain important points on the line."
+do_not_use_when: "Do NOT use for multiple entities, static comparisons, or when the annotations are not grounded in the data or source context."
 style_notes:
   callout_box:
     fill: "#111111"
@@ -489,7 +504,7 @@ note: "Landscape only. Different aspect ratio. Refer to section 8 only when the 
 confidence: strong
 supported_v1: true
 use_when: "Showing changes (% growth/decline, year-over-year deltas, gains/losses) across categories. There is a meaningful zero baseline and values can be positive OR negative."
-do_not_use_when: "Values are all positive (use ranked_horizontal_bar instead). Showing absolute counts or sizes."
+do_not_use_when: "Values are all positive (use ranked_horizontal_bar instead). Showing absolute counts or sizes. Do NOT use for efficiency ratios like revenue per employee unless the ratio itself is a signed delta."
 data_shape:
   required: "[{label: string, value: number, total?: number}]  // value is signed (positive or negative)"
   recommended_rows: "5-10"
@@ -515,7 +530,7 @@ worked_example_template: "see section 8.5"
 confidence: strong
 supported_v1: true
 use_when: "Comparing how 3-5 distinct named entities change over time on the same metric. The reader is asked to see relative trends and crossovers."
-do_not_use_when: "Only one entity (use single_line_timeseries). Comparing more than 5 entities (chart becomes unreadable). Static snapshot with no time dimension."
+do_not_use_when: "Only one entity (use single_line_timeseries). Comparing more than 5 entities (chart becomes unreadable). Static snapshot with no time dimension. Do NOT use for a per-entity efficiency ranking at one point in time (use ranked_horizontal_bar of the computed ratio)."
 data_shape:
   required: "[{entity: string, brand_color_hex?: string, points: [{date: string, value: number}]}]"
   recommended_entities: "3-5"
@@ -537,7 +552,7 @@ worked_example_template: "see section 8.6"
 confidence: strong
 supported_v1: true
 use_when: "Telling the story of one entity's metric over time, where specific events (launches, fundraises, pivots, partnerships) caused inflection points worth calling out."
-do_not_use_when: "No notable events on the timeline (use plain single_line_timeseries). Multiple entities (use multi_line_timeseries)."
+do_not_use_when: "No notable events on the timeline (use plain single_line_timeseries). Multiple entities (use multi_line_timeseries). Static comparisons, rankings, and ratio leaderboards."
 data_shape:
   required: "[{date: string, value: number}]"
   required_annotations: "[{date: string, label: string, sublabel?: string}]  // attached to specific data points"
@@ -568,7 +583,7 @@ note: "This is a softer, more illustrative cousin of `annotated_line_timeseries`
 confidence: strong
 supported_v1: true
 use_when: "Showing the COMPOSITION of a single whole — what makes up an entity (where its employees came from, where its revenue comes from, what its customer mix is). One bar, segmented into proportional pieces."
-do_not_use_when: "Comparing multiple entities (use ranked_horizontal_bar or vertical_bar_comparison). Showing changes over time."
+do_not_use_when: "Comparing multiple entities (use ranked_horizontal_bar or vertical_bar_comparison). Showing changes over time. Ranking entities by efficiency or highest X per Y (use ranked_horizontal_bar of the computed ratio)."
 data_shape:
   required: "[{label: string, value: number, count?: number}]  // values must sum to 100% of the whole"
   recommended_segments: "4-8"
@@ -591,7 +606,7 @@ worked_example_template: "see section 8.8"
 confidence: strong
 supported_v1: true
 use_when: "Showing geographic or categorical distribution where the WHOLE matters (e.g., 'Europe created 27 unicorns in 2025 — by country'). Total count is meaningful."
-do_not_use_when: "Showing rankings (use ranked_horizontal_bar). Comparing two metrics. More than 8 segments (chart becomes unreadable — use ranked_horizontal_bar)."
+do_not_use_when: "Showing rankings (use ranked_horizontal_bar). Comparing two metrics. Ratio/efficiency leaderboards. More than 8 segments (chart becomes unreadable - use ranked_horizontal_bar)."
 data_shape:
   required: "[{label: string, value: number, flag_or_logo?: string}]"
   recommended_segments: "3-8"
@@ -615,7 +630,7 @@ worked_example_template: "see section 8.9"
 confidence: strong
 supported_v1: true
 use_when: "Showing how rankings or values changed for several entities between TWO specific time points (e.g., 'How AI lab market share shifted from 2024 to 2026'). Before-and-after comparison with the same metric."
-do_not_use_when: "More than two time points (use multi_line_timeseries). Single entity (no slope to show)."
+do_not_use_when: "More than two time points (use multi_line_timeseries). Single entity (no slope to show). Static efficiency questions where only the final ratio matters (use ranked_horizontal_bar)."
 data_shape:
   required: "[{entity: string, start_value: number, end_value: number, brand_color_hex?: string}]"
   required_axis_labels: "{start_label: string, end_label: string}  // e.g., '2024' and '2026'"
@@ -638,12 +653,12 @@ worked_example_template: "see section 8.10"
 ```yaml
 confidence: strong
 supported_v1: true
-use_when: "Showing the relationship between TWO metrics across multiple entities (e.g., 'Headcount vs revenue per employee at AI labs'). Each entity is a single point."
-do_not_use_when: "Only one metric matters (use a ranked or comparison chart). Time is a dimension (use timeseries). Fewer than 4 entities (no real distribution to plot)."
+use_when: "Use when showing the relationship between TWO INDEPENDENT METRICS across multiple entities (e.g., 'is there a correlation between funding and headcount?'). The user is asking about correlation patterns, not which entity is most efficient."
+do_not_use_when: "Do NOT use when the user asks 'who does more with less,' 'who is most efficient,' 'highest X per Y,' or any question about ratios. Use ranked_horizontal_bar of the computed ratio instead. Do NOT use when there are fewer than 6 entities - too sparse to read as a distribution. Do NOT use when the user wants to compare or rank entities - scatter plots show distributions, not rankings. Do NOT use when time is a dimension (use timeseries)."
 data_shape:
   required: "[{entity: string, x: number, y: number, brand_color_hex?: string}]"
   required_axis_labels: "{x_label: string, y_label: string}"
-  recommended_entities: "5-15"
+  recommended_entities: "6-15"
 style_notes:
   geometry: "standard X-Y axes, both with origin at bottom-left of chart area"
   x_axis_label: "bottom-center of chart in 14pt medium #1A1A1A (e.g., 'Total headcount')"
@@ -1508,6 +1523,7 @@ do_not:
   - "Do NOT ask GPT-image-2 to render the 'Data from: Crustdata' footer."
   - "Do NOT ask GPT-image-2 to render the Crustdata logo, wordmark, or any footer branding."
   - "Do NOT use rainbow palettes for ranked bars of the same type."
+  - "Do NOT use scatter plots for ratio, efficiency, productivity, unit economics, or highest X per Y questions; compute the ratio and render a ranked horizontal bar."
   - "Do NOT use rounded bar ends or pill-shaped bars. Bars are sharp rectangles."
   - "Do NOT use gradients anywhere — background, bars, text, or any element."
   - "Do NOT use drop shadows on any element."

@@ -2447,6 +2447,7 @@ Requirements:
     if (!run.data) {
       throw new Error('No chart-ready data exists for image generation.');
     }
+    const chartData = run.data;
 
     run = await writeRun({ ...run, status: 'generating', error: undefined });
     run = await writeRun(updateStep(run, 'awaiting_chart_type_selection', 'done'));
@@ -2454,7 +2455,7 @@ Requirements:
 
     const imageArtifact = await createPostImageArtifact(
       runId,
-      run.data,
+      chartData,
       selectedTemplate
     );
 
