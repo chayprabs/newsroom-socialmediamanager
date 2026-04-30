@@ -3,6 +3,10 @@ import { createRun, MAX_STEERING_INPUT_CHARS } from '@/lib/server/pipeline';
 import { listRuns } from '@/lib/server/storage';
 import { getRecentSteerings } from '@/lib/pipeline/topicHistory';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
+
 const RECENT_STEERINGS_LOOKBACK_RUNS = 5;
 
 export async function GET() {

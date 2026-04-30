@@ -2,6 +2,10 @@ import path from 'node:path';
 import { NextResponse } from 'next/server';
 import { readRun, readRunArtifactBuffer } from '@/lib/server/storage';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
+
 type RouteContext = {
   params: Promise<{ id: string }>;
 };

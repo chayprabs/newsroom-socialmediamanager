@@ -2,6 +2,10 @@ import { NextResponse } from 'next/server';
 import { deleteRun, readRun } from '@/lib/server/storage';
 import { readSonnetUsageSummary } from '@/lib/pipeline/tokenLogger';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
+
 type RouteContext = {
   params: Promise<{ id: string }>;
 };
