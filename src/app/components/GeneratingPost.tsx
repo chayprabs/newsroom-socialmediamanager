@@ -35,7 +35,13 @@ export function GeneratingPost() {
     hasStartedDiscovery.current = true;
 
     fetch(`/api/runs/${runId}/discover`, { method: 'POST' })
-      .then((response) => response.json())
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof data.error === 'string' ? data.error : 'Idea discovery failed.');
+        }
+        return data;
+      })
       .then((data) => {
         if (data.run) {
           setRun(data.run);
@@ -44,7 +50,9 @@ export function GeneratingPost() {
           }
         }
       })
-      .catch(() => setError('Idea discovery failed to start.'));
+      .catch((discoveryError) =>
+        setError(discoveryError instanceof Error ? discoveryError.message : 'Idea discovery failed.')
+      );
   }, [router, runId, setError, setRun]);
 
   useEffect(() => {
@@ -63,7 +71,7 @@ export function GeneratingPost() {
   };
 
   const hasNoMatches = run?.status === 'no_matches';
-  const visibleError = run?.error || (!run ? error : '');
+  const visibleError = run?.error || error;
   const hasFailure = run?.status === 'failed' || Boolean(visibleError);
   const steeringTrimmed = run?.steering_input?.trim() ?? '';
   const showSteeredDiscoverMessage =

@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { regeneratePost } from '@/lib/server/pipeline';
 
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
+
 type RouteContext = {
   params: Promise<{ id: string }>;
 };

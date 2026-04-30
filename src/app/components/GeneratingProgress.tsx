@@ -24,7 +24,13 @@ export function GeneratingProgress() {
     hasStartedGeneration.current = true;
 
     fetch(`/api/runs/${runId}/generate`, { method: 'POST' })
-      .then((response) => response.json())
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(typeof data.error === 'string' ? data.error : 'Generation failed.');
+        }
+        return data;
+      })
       .then((data) => {
         if (data.run) {
           setRun(data.run);
@@ -35,7 +41,9 @@ export function GeneratingProgress() {
           }
         }
       })
-      .catch(() => setError('Generation failed to start.'));
+      .catch((generationError) =>
+        setError(generationError instanceof Error ? generationError.message : 'Generation failed.')
+      );
   }, [router, runId, setError, setRun]);
 
   useEffect(() => {
@@ -50,7 +58,7 @@ export function GeneratingProgress() {
     router.push('/dashboard');
   };
 
-  const visibleError = run?.error || (!run ? error : '');
+  const visibleError = run?.error || error;
   const errorDetails = run?.error_details;
   const isImagePromptValidationFailure = errorDetails?.kind === 'image_prompt_validation_failed';
 
