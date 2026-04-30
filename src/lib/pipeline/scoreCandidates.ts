@@ -25,12 +25,28 @@ export type ScoreCandidatesResponse = {
   scored_candidates?: ScoredCandidate[];
 };
 
-export function buildScoreCandidatesPrompt(rawCandidates: unknown[], endpointRegistry: string) {
+export interface BuildScoreCandidatesPromptOptions {
+  /**
+   * Optional per-run steering text from the Dashboard chat-box. Surfaced as a
+   * soft preference — see {@link buildSteeringContextBlock} — never as a hard
+   * filter, so the existing rubric (api_feasibility, recency, archetype_fit,
+   * visual_potential, engagement_likelihood) is unchanged.
+   */
+  steeringInput?: string;
+}
+
+export function buildScoreCandidatesPrompt(
+  rawCandidates: unknown[],
+  endpointRegistry: string,
+  options: BuildScoreCandidatesPromptOptions = {},
+) {
   return `Candidate trends:
 ${JSON.stringify({ candidates: rawCandidates }, null, 2)}
 
 Endpoint capability registry:
 ${endpointRegistry}
+
+${buildSteeringContextBlock(options.steeringInput)}
 
 Pass 1 task: score every candidate and decide whether it is structurally feasible using only the usable Crustdata endpoints in the registry.
 
@@ -43,6 +59,29 @@ Rules:
 - Keep matched_archetype, matched_angle, and matched_visual as short snake_case ids.
 - For infeasible candidates, use only the fields in the tool schema. Do not include headline, subhead, rationale, crustdata_query, visual_template, or expected_data_shape.
 - Submit all scored candidates through the submit_candidate_scores tool.`;
+}
+
+/**
+ * Soft-preference block embedded in Stage 2 user messages. Both Stage 2 passes
+ * (score + reframe) read the same block so the rubric stays consistent across
+ * passes; Stage 1 builds its own steering block because it has different
+ * instructions (PRIMARY signal for query construction).
+ *
+ * Always emits the block — even when steering is absent — so prompt caching
+ * sees a stable structural prefix and the model has explicit context that the
+ * run was not steered.
+ */
+export function buildSteeringContextBlock(steeringInput?: string): string {
+  const trimmed = steeringInput?.trim();
+  if (!trimmed) {
+    return `USER STEERING INPUT for this run (for context — do not let this change your scoring rubric):
+(blank — no steering input was provided; score with the standard rubric only)`;
+  }
+
+  return `USER STEERING INPUT for this run (for context — do not let this change your scoring rubric):
+${trimmed}
+
+If steering input is present: prefer candidates that align tightly with what the user asked for. If multiple candidates match the input equally well, fall back to standard scoring criteria. Do NOT artificially boost weak candidates just because they mention the steering keywords — quality and feasibility still matter most.`;
 }
 
 export function isScoredCandidate(value: unknown): value is ScoredCandidate {

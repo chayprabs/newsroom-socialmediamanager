@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { CandidateSpec, GeneratedPostData, GenerationStep, RunErrorDetails, RunState } from '../types';
+import type { CandidateSpec, ChartTypeOption, GeneratedPostData, GenerationStep, RunErrorDetails, RunState } from '../types';
 import {
   type AnthropicCallOptions,
   type AnthropicTextBlock,
@@ -30,6 +30,11 @@ import {
   type ReframedCandidate,
 } from '../pipeline/reframeCandidates';
 import { getRecentTemplates, recordTemplateUsed } from '../pipeline/templateHistory';
+import {
+  getRecentSteeringHistory,
+  recordSteering,
+  type RecentSteeringEntry,
+} from '../pipeline/topicHistory';
 import {
   buildImagePrompt,
   ImagePromptTooLongError,
@@ -70,6 +75,7 @@ type CandidateForValidation = Omit<Partial<CandidateSpec>, 'crustdata_query'> & 
     intent?: string;
     params?: Record<string, unknown>;
   };
+  chart_type_options?: ChartTypeOption[];
 };
 
 type RuntimeKnowledgeFile = 'base' | 'design';
@@ -87,6 +93,14 @@ type GeneratedPostToolInput = {
 
 const FEASIBILITY_LOG_FILENAME = 'pipeline.log';
 const MAX_DISCOVERY_CANDIDATES = 10;
+const GROK_QUERY_TOOL_NAME = 'submit_grok_query';
+
+/** Must stay in sync with POST /api/runs steering cap. Exported for the route. */
+export const MAX_STEERING_INPUT_CHARS = 200;
+
+const DEFAULT_STEERING_TIME_WINDOW_DAYS = 7;
+const MIN_STEERING_TIME_WINDOW_DAYS = 1;
+const MAX_STEERING_TIME_WINDOW_DAYS = 30;
 const DISCOVERY_CANDIDATES_TOOL_NAME = 'submit_discovery_candidates';
 const SCORE_CANDIDATES_TOOL_NAME = 'submit_candidate_scores';
 const REFRAME_CANDIDATES_TOOL_NAME = 'submit_reframed_candidates';
@@ -157,6 +171,12 @@ function defaultSteps(): GenerationStep[] {
       id: 'finalizing_data',
       title: 'Finalizing data',
       description: 'Shaping the response into a chart-ready format.',
+      status: 'pending',
+    },
+    {
+      id: 'awaiting_chart_type_selection',
+      title: 'Awaiting chart-type selection',
+      description: 'Pick a chart type before the post image is rendered.',
       status: 'pending',
     },
     {
@@ -271,6 +291,122 @@ function stage2ScoresSchema(): Record<string, unknown> {
       'total',
     ],
   };
+}
+
+type Stage1QueryToolInput = {
+  grok_query?: unknown;
+  steering_acknowledged?: unknown;
+  time_window_days?: unknown;
+};
+
+function grokQueryTool(): AnthropicTool[] {
+  return [
+    {
+      name: GROK_QUERY_TOOL_NAME,
+      description:
+        'Submit the Grok/X live-search query for Stage 1 trend discovery, plus an explicit acknowledgement of how the steering input was interpreted.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          grok_query: {
+            type: 'string',
+            description:
+              'One concise Grok/X live-search prompt, plain text. Centers on the steering input when present, otherwise targets general trending Crustdata-shaped conversations.',
+          },
+          steering_acknowledged: {
+            type: 'string',
+            description:
+              "If steering_input was present, summarize in one sentence how you interpreted the user's intent. If blank, write 'No steering input — defaulted to general trending discovery.'",
+          },
+          time_window_days: {
+            type: 'integer',
+            description:
+              'Recency window the Grok query should honor, in days. Typical 7-14 for steered runs; default 7 for unsteered runs.',
+          },
+        },
+        required: ['grok_query', 'steering_acknowledged', 'time_window_days'],
+      },
+    },
+  ];
+}
+
+function buildStage1QueryPrompt(steeringInput?: string): string {
+  const trimmed = steeringInput?.trim();
+  const steeringBlock = trimmed && trimmed.length > 0 ? trimmed : '(blank — no steering input)';
+
+  return `Write one concise Grok/X live-search prompt to find current tech/startup conversations that can become Crustdata data posts.
+
+USER STEERING INPUT for this run:
+${steeringBlock}
+
+If the steering input is blank or absent, construct a Grok query targeting general trending conversations matching the editorial archetypes in base.md (your existing default behavior).
+
+If the steering input is present, construct a Grok query that:
+1. Centers on the topic, entity, or angle the user described.
+2. Still respects the editorial archetypes in base.md — find the trending conversations within that steering input that ALSO match Crustdata's archetypes.
+3. Specifically searches for X conversations referencing the entities or topics mentioned in the steering input.
+4. Returns 8-12 candidates focused on the steering input rather than general trends.
+
+Examples of how to handle steering inputs:
+- Input "Thinking Machines Lab recent hires" → Grok query targeting conversations on X discussing Thinking Machines Lab's hiring, talent movement, founding team, recent additions, all within the last 14 days.
+- Input "AI hiring" → broader: Grok query targeting trending conversations about AI lab hiring velocity, role distribution, layoffs, startup hiring patterns, recent 7-14 days.
+- Input "Anthropic" → entity-centric: trending conversations about Anthropic specifically — funding, products, hiring, comparisons with other labs.
+
+The user's steering input is the PRIMARY signal for what they want. base.md is the secondary signal that constrains how the topic is framed editorially.
+
+The downstream Crustdata key can only use these endpoint-backed post shapes:
+- Hiring demand and job-posting counts via /job/search.
+- Company cohorts, rankings, funding/headcount/location/taxonomy comparisons via /company/search.
+- Known-company deep dives via /company/enrich.
+- Founder, alumni, title, employer, skills, and location patterns via /person/search.
+- Known-person enrichment via /person/enrich.
+- Known-URL page fetches via /web/enrich/live.
+
+Avoid trends that require unavailable data: professional-network live endpoints, /web/search/live, broad web discovery, sentiment analysis, comment analysis, or anything that needs values Crustdata cannot structurally return.
+Prefer data-rich questions with broad cohorts, rankings, or aggregations.
+
+If the steering input is in a non-English language, you may construct the Grok query in English (which is what Grok handles best) but include the original-language entity names verbatim.
+
+Submit through the ${GROK_QUERY_TOOL_NAME} tool. Set time_window_days to the recency window the Grok query should honor (default ${DEFAULT_STEERING_TIME_WINDOW_DAYS}; for steered runs prefer 7-14 unless the steering input clearly demands a different window).`;
+}
+
+/**
+ * Render the "Recent steerings used in the last N runs" block injected into
+ * the Stage 1 system prompt's stage instruction (so prompt caching for base.md
+ * is preserved — only the unstable instruction block changes per run).
+ *
+ * Formatted exactly as the spec example:
+ *   Recent steerings used in the last 5 runs:
+ *   - "Thinking Machines Lab recent hires"
+ *   - "AI lab funding"
+ *   - (blank)
+ */
+function buildRecentSteeringsBlock(history: RecentSteeringEntry[]): string {
+  if (!history.length) {
+    return `Recent steerings used in the last 5 runs:
+(no saved runs yet — no recent steerings to consider)`;
+  }
+
+  const lines = history.map((entry) =>
+    entry.steering ? `- "${entry.steering}"` : '- (blank)',
+  );
+
+  return `Recent steerings used in the last ${history.length} runs:
+${lines.join('\n')}
+
+If the current steering input matches or closely overlaps with a recent one, surface DIFFERENT angles within the same topic. The user has already seen the obvious takes — show them something fresh from the same area.
+
+This is an additional steering signal on top of the diversity rule from the previous PR.`;
+}
+
+function clampTimeWindowDays(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_STEERING_TIME_WINDOW_DAYS;
+  }
+  const rounded = Math.round(value);
+  if (rounded < MIN_STEERING_TIME_WINDOW_DAYS) return MIN_STEERING_TIME_WINDOW_DAYS;
+  if (rounded > MAX_STEERING_TIME_WINDOW_DAYS) return MAX_STEERING_TIME_WINDOW_DAYS;
+  return rounded;
 }
 
 function discoveryCandidatesTool(): AnthropicTool[] {
@@ -398,6 +534,39 @@ export function reframeCandidatesTool(): AnthropicTool[] {
                 visual_template: {
                   type: 'string',
                   enum: Array.from(ALLOWED_VISUAL_TEMPLATES),
+                },
+                chart_type_options: {
+                  type: 'array',
+                  minItems: 3,
+                  maxItems: 3,
+                  items: {
+                    type: 'object',
+                    properties: {
+                      rank: { type: 'integer', minimum: 1, maximum: 3 },
+                      visual_template: {
+                        type: 'string',
+                        enum: Array.from(ALLOWED_VISUAL_TEMPLATES),
+                        description: 'Must match a template name in design.md.',
+                      },
+                      rationale: {
+                        type: 'string',
+                        description:
+                          "1-2 sentence explanation of why this chart type fits the data and the user's question. Be specific about what the chart will show.",
+                      },
+                      data_preview: {
+                        type: 'string',
+                        description:
+                          "A short text preview of what the chart will look like with the actual data. Example: 'Ranked bar with 5 rows: Anthropic ($X/employee), OpenAI ($Y/employee), ... - sorted descending.'",
+                      },
+                      suitability_score: {
+                        type: 'integer',
+                        minimum: 1,
+                        maximum: 10,
+                        description: "How well this chart type answers the user's question on a 1-10 scale.",
+                      },
+                    },
+                    required: ['rank', 'visual_template', 'rationale', 'data_preview', 'suitability_score'],
+                  },
                 },
                 expected_data_shape: { type: 'string' },
               },
@@ -1319,6 +1488,54 @@ function stripNonApiHelperParams(params: Record<string, unknown>) {
   );
 }
 
+function normalizeChartTypeOptions(candidate: CandidateForValidation): ChartTypeOption[] | undefined {
+  const rawOptions = Array.isArray(candidate.chart_type_options) ? candidate.chart_type_options : [];
+  const normalized = rawOptions
+    .map((option) => {
+      if (!isRecord(option)) return null;
+      const rank = typeof option.rank === 'number' && Number.isInteger(option.rank) ? option.rank : 0;
+      const visualTemplate = typeof option.visual_template === 'string' ? option.visual_template.trim() : '';
+      const rationale = typeof option.rationale === 'string' ? option.rationale.trim() : '';
+      const dataPreview = typeof option.data_preview === 'string' ? option.data_preview.trim() : '';
+      const suitabilityScore =
+        typeof option.suitability_score === 'number' && Number.isInteger(option.suitability_score)
+          ? option.suitability_score
+          : 0;
+
+      if (rank < 1 || rank > 3 || !ALLOWED_VISUAL_TEMPLATES.has(visualTemplate)) return null;
+
+      return {
+        rank,
+        visual_template: visualTemplate,
+        rationale,
+        data_preview: dataPreview,
+        suitability_score: Math.min(10, Math.max(1, suitabilityScore || 1)),
+      };
+    })
+    .filter((option): option is ChartTypeOption => Boolean(option))
+    .sort((a, b) => a.rank - b.rank);
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const fallbackTemplate =
+    candidate.visual_template?.trim() || candidate.matched_visual?.trim() || '';
+  if (!ALLOWED_VISUAL_TEMPLATES.has(fallbackTemplate)) {
+    return undefined;
+  }
+
+  return [
+    {
+      rank: 1,
+      visual_template: fallbackTemplate,
+      rationale: 'Newsroom selected this as the best available visual template for the candidate.',
+      data_preview: 'Preview will be generated after data is finalized.',
+      suitability_score: 8,
+    },
+  ];
+}
+
 function normalizeValidatedCandidate(
   candidate: CandidateForValidation,
   scoredById: Map<string, ScoredCandidate>
@@ -1333,6 +1550,8 @@ function normalizeValidatedCandidate(
     capability && typeof candidate.crustdata_query?.intent === 'string'
       ? inferSupportedIntent(capability, candidate.crustdata_query.intent, params) || candidate.crustdata_query.intent
       : candidate.crustdata_query?.intent;
+  const chartTypeOptions = normalizeChartTypeOptions(candidate);
+  const topChartTemplate = chartTypeOptions?.[0]?.visual_template;
 
   const normalized: CandidateSpec & CandidateForValidation = {
     candidate_id: candidateId,
@@ -1353,7 +1572,13 @@ function normalizeValidatedCandidate(
       intent,
       params,
     },
-    visual_template: candidate.visual_template || candidate.matched_visual || scoredCandidate?.matched_visual || '',
+    visual_template:
+      topChartTemplate ||
+      candidate.visual_template ||
+      candidate.matched_visual ||
+      scoredCandidate?.matched_visual ||
+      '',
+    chart_type_options: chartTypeOptions,
     expected_data_shape: candidate.expected_data_shape,
   };
 
@@ -1593,16 +1818,48 @@ function requireRun(run: RunState | null): RunState {
   return run;
 }
 
-export async function createRun() {
+export interface CreateRunOptions {
+  /**
+   * Optional steering text submitted from the Dashboard chat-box. Trimmed
+   * server-side. When empty/undefined the run uses the unsteered base.md flow.
+   * Never pass whitespace-only — callers should strip first.
+   */
+  steeringInput?: string;
+  /**
+   * When the client/API truncated `steeringInput` from a longer paste, set
+   * this to the pre-truncation character count so Stage 1 can disclose it in
+   * the uncached system instruction block (base.md caching unchanged).
+   */
+  steeringInputTruncatedFromChars?: number;
+}
+
+export async function createRun(options: CreateRunOptions = {}) {
   const timestamp = now();
+  const steeringInput = options.steeringInput?.trim();
+  const truncatedFrom = options.steeringInputTruncatedFromChars;
+  const hasTruncationMeta =
+    typeof truncatedFrom === 'number' &&
+    Number.isFinite(truncatedFrom) &&
+    truncatedFrom > MAX_STEERING_INPUT_CHARS &&
+    Boolean(steeringInput);
+
+  let logMessage = 'Run created.';
+  if (steeringInput) {
+    logMessage = hasTruncationMeta
+      ? `Run created with steering input (truncated from ${truncatedFrom} to ${MAX_STEERING_INPUT_CHARS} chars): "${steeringInput}".`
+      : `Run created with steering input: "${steeringInput}".`;
+  }
+
   const run: RunState = {
     run_id: randomUUID(),
     created_at: timestamp,
     updated_at: timestamp,
     status: 'created',
-    logs: [{ at: timestamp, message: 'Run created.' }],
+    logs: [{ at: timestamp, message: logMessage }],
     candidates: [],
     generation_steps: defaultSteps(),
+    ...(steeringInput ? { steering_input: steeringInput } : {}),
+    ...(hasTruncationMeta ? { steering_input_truncated_from_chars: truncatedFrom } : {}),
   };
 
   return writeRun(run);
@@ -1616,35 +1873,102 @@ export async function discoverCandidates(runId: string) {
     run = await appendLog(run, 'Reading editorial base.');
 
     const baseKnowledge = await readRuntimeKnowledge(['base']);
+    const steeringInput = run.steering_input?.trim() || undefined;
+
+    if (steeringInput) {
+      run = await appendLog(run, `Stage 1 steered by user input: "${steeringInput}".`);
+    } else {
+      run = await appendLog(run, 'Stage 1 unsteered — defaulting to general trending discovery.');
+    }
+
+    const recentSteeringHistory = await getRecentSteeringHistory(5, {
+      includeCompletedUnsavedRuns: true,
+      excludeRunId: runId,
+    });
+    if (recentSteeringHistory.length) {
+      const summary = recentSteeringHistory
+        .map((entry) => entry.steering ?? '(blank)')
+        .join(' | ');
+      run = await appendLog(
+        run,
+        `Recent steerings (newest -> oldest): ${summary}.`,
+      );
+    }
+
+    const truncatedFrom = run.steering_input_truncated_from_chars;
+    const truncationSystemNote =
+      typeof truncatedFrom === 'number' &&
+      Number.isFinite(truncatedFrom) &&
+      truncatedFrom > MAX_STEERING_INPUT_CHARS
+        ? `Note: user's steering input was truncated from ${truncatedFrom} to ${MAX_STEERING_INPUT_CHARS} characters.\n\n`
+        : '';
+
+    if (truncationSystemNote) {
+      run = await appendLog(
+        run,
+        `Steering input was truncated from ${truncatedFrom} to ${MAX_STEERING_INPUT_CHARS} characters before Stage 1.`,
+      );
+    }
+
+    const stage1Instruction = `${truncationSystemNote}${
+      steeringInput
+        ? "You are Stage 1 of Newsroom for Crustdata: create a steered trend-discovery prompt for Grok/X. The user's steering input is the PRIMARY signal; base.md is the secondary editorial constraint."
+        : 'You are Stage 1 of Newsroom for Crustdata: create a general trend-discovery prompt for Grok/X.'
+    }
+
+${buildRecentSteeringsBlock(recentSteeringHistory)}`;
 
     run = await appendLog(run, 'Asking Claude to construct a Grok trend discovery query.');
-    const grokQuery = await callLoggedAnthropic(
+    const stage1Response = await callLoggedAnthropicFull(
       'stage_1_discovery',
       runId,
-      `Write one concise Grok/X live-search prompt to find current tech/startup conversations that can become Crustdata data posts.
-
-The downstream Crustdata key can only use these endpoint-backed post shapes:
-- Hiring demand and job-posting counts via /job/search.
-- Company cohorts, rankings, funding/headcount/location/taxonomy comparisons via /company/search.
-- Known-company deep dives via /company/enrich.
-- Founder, alumni, title, employer, skills, and location patterns via /person/search.
-- Known-person enrichment via /person/enrich.
-- Known-URL page fetches via /web/enrich/live.
-
-Avoid trends that require unavailable data: professional-network live endpoints, /web/search/live, broad web discovery, sentiment analysis, comment analysis, or anything that needs values Crustdata cannot structurally return.
-Prefer data-rich questions with broad cohorts, rankings, or aggregations. Return plain text only.`,
+      buildStage1QueryPrompt(steeringInput),
       {
-        system: cachedRuntimeSystem(
-          baseKnowledge,
-          ['base'],
-          'You are Stage 1 of Newsroom for Crustdata: create a trend-discovery prompt for Grok/X.'
-        ),
+        system: cachedRuntimeSystem(baseKnowledge, ['base'], stage1Instruction),
+        tools: grokQueryTool(),
+        toolChoice: { type: 'tool', name: GROK_QUERY_TOOL_NAME },
       }
     );
+
+    const stage1ToolInput = await getRequiredToolInput<Stage1QueryToolInput>(
+      'stage_1_discovery',
+      runId,
+      stage1Response.response,
+      GROK_QUERY_TOOL_NAME
+    );
+
+    const rawGrokQuery = typeof stage1ToolInput.grok_query === 'string' ? stage1ToolInput.grok_query.trim() : '';
+    if (!rawGrokQuery) {
+      throw new Error('Stage 1 returned an empty grok_query.');
+    }
+    const grokQuery = rawGrokQuery;
+    const steeringAcknowledged =
+      typeof stage1ToolInput.steering_acknowledged === 'string' && stage1ToolInput.steering_acknowledged.trim()
+        ? stage1ToolInput.steering_acknowledged.trim()
+        : steeringInput
+          ? `Steered toward: ${steeringInput}.`
+          : 'No steering input — defaulted to general trending discovery.';
+    const timeWindowDays = clampTimeWindowDays(stage1ToolInput.time_window_days);
+
+    run = await writeRun({
+      ...run,
+      steering_acknowledged: steeringAcknowledged,
+      steering_time_window_days: timeWindowDays,
+    });
+    run = await appendLog(
+      run,
+      `Stage 1 acknowledged steering: ${steeringAcknowledged} (time window: last ${timeWindowDays} day(s)).`
+    );
+
+    const steeringClause = steeringInput
+      ? `User steering for this run: ${steeringInput}\nFavor candidates that align tightly with this steering. Quality and feasibility still matter most.\n\n`
+      : '';
 
     const grokCandidatePrompt = `Use this search intent to identify and rank the best ${MAX_DISCOVERY_CANDIDATES} current tech/startup trend candidates suitable for Crustdata data posts:
 
 ${grokQuery}
+
+${steeringClause}Recency window: focus on conversations from the last ${timeWindowDays} day(s).
 
 Return only the strongest ${MAX_DISCOVERY_CANDIDATES} ideas according to your judgment. Rank them from strongest to weakest before returning them. Favor trends that can become:
 - rankings or counts across companies,
@@ -1678,6 +2002,10 @@ Return JSON with this exact shape:
       const message = error instanceof Error ? error.message : String(error);
       run = await appendLog(run, `Grok discovery failed (${message}). Falling back to Claude candidate generation.`);
       discoverySource = 'Claude fallback';
+      const fallbackSteeringClause = steeringInput
+        ? `\nUSER STEERING INPUT for this run:\n${steeringInput}\n\nCenter the fallback candidates on this steering input while still respecting base.md archetypes. Do not drift into general trending if the steering is clear.\n`
+        : '';
+
       const fallbackResponse = await callLoggedAnthropicFull(
         'stage_1_discovery_fallback',
         runId,
@@ -1685,6 +2013,8 @@ Return JSON with this exact shape:
 
 Use the same search intent and constraints:
 ${grokQuery}
+${fallbackSteeringClause}
+Recency window: focus on conversations and signals from the last ${timeWindowDays} day(s).
 
 The candidates do not need live engagement numbers, but they must be plausible, API-backed, and broad enough for Crustdata data posts.
 Use only these endpoint-backed shapes:
@@ -1699,7 +2029,9 @@ Submit the candidates through the submit_discovery_candidates tool.`,
           system: cachedRuntimeSystem(
             baseKnowledge,
             ['base'],
-            'You are Stage 1 fallback for Newsroom: produce conservative Crustdata API-ready candidate ideas when Grok is unavailable.'
+            steeringInput
+              ? "You are Stage 1 fallback for Newsroom: produce conservative Crustdata API-ready candidate ideas centered on the user's steering input when Grok is unavailable."
+              : 'You are Stage 1 fallback for Newsroom: produce conservative Crustdata API-ready candidate ideas when Grok is unavailable.'
           ),
           tools: discoveryCandidatesTool(),
           toolChoice: { type: 'tool', name: DISCOVERY_CANDIDATES_TOOL_NAME },
@@ -1733,12 +2065,14 @@ Submit the candidates through the submit_discovery_candidates tool.`,
     const scoredResponse = await callLoggedAnthropicFull(
       'stage_2_score',
       runId,
-      buildScoreCandidatesPrompt(rawCandidateList, formatEndpointCapabilitiesForPrompt()),
+      buildScoreCandidatesPrompt(rawCandidateList, formatEndpointCapabilitiesForPrompt(), {
+        steeringInput,
+      }),
       {
         system: cachedRuntimeSystem(
           baseKnowledge,
           ['base'],
-          'You are Stage 2 pass 1 of Newsroom: score all trend candidates and decide initial Crustdata feasibility.'
+          'You are Stage 2 pass 1 of Newsroom: score all trend candidates and decide initial Crustdata feasibility. Treat any steering input in the user message as a soft preference only — never as a hard filter or rubric override.'
         ),
         maxTokens: 4096,
         tools: scoreCandidatesTool(),
@@ -1788,12 +2122,13 @@ Submit the candidates through the submit_discovery_candidates tool.`,
       runId,
       buildReframeCandidatesPrompt(topScoredCandidates, formatEndpointCapabilitiesForPrompt(), {
         recentVisualTemplates,
+        steeringInput,
       }),
       {
         system: cachedRuntimeSystem(
           reframeKnowledge,
           ['base', 'design'],
-          `You are Stage 2 pass 2 of Newsroom: fully reframe only the supplied feasible candidates into deterministic Crustdata query specs. Only use these currently usable endpoints:\n${formatUsableEndpoints()}\n\n${STAGE_2_DIVERSITY_RULE}`
+          `You are Stage 2 pass 2 of Newsroom: fully reframe only the supplied feasible candidates into deterministic Crustdata query specs. Only use these currently usable endpoints:\n${formatUsableEndpoints()}\n\n${STAGE_2_DIVERSITY_RULE}\n\nIf the user message contains a steering input, treat it as a soft tie-break preference only — the diversity rule and feasibility rules above always take precedence.`
         ),
         maxTokens: 4096,
         tools: reframeCandidatesTool(),
@@ -1889,6 +2224,10 @@ Submit the candidates through the submit_discovery_candidates tool.`,
     const topSpecsArtifact = {
       run_id: runId,
       generated_at: now(),
+      steering_input: steeringInput ?? null,
+      steering_input_truncated_from_chars: run.steering_input_truncated_from_chars ?? null,
+      steering_acknowledged: steeringAcknowledged,
+      steering_time_window_days: timeWindowDays,
       recent_visual_templates: recentVisualTemplates,
       template_diversity_check: {
         distinct_templates_in_top_3: distinctTemplatesActual,
@@ -1902,6 +2241,7 @@ Submit the candidates through the submit_discovery_candidates tool.`,
         headline: candidate.headline,
         subhead: candidate.subhead,
         visual_template: candidate.visual_template,
+        chart_type_options: candidate.chart_type_options,
         matched_archetype: candidate.matched_archetype,
         matched_angle: candidate.matched_angle,
         crustdata_query: candidate.crustdata_query,
@@ -1944,8 +2284,52 @@ export async function selectCandidate(runId: string, candidateId: string) {
     status: 'generating',
     selected_candidate_id: candidateId,
     selected_candidate: selected,
+    selected_chart_template: undefined,
+    selected_chart_rationale: undefined,
     generation_steps: defaultSteps(),
     logs: [...run.logs, { at: now(), message: `Selected candidate: ${selected.headline}` }],
+  });
+}
+
+function findChartTypeOption(run: RunState, template: string) {
+  const normalizedTemplate = template.trim();
+  return run.selected_candidate?.chart_type_options?.find(
+    (option) => option.visual_template === normalizedTemplate
+  );
+}
+
+export async function selectChartType(runId: string, selectedTemplate: string) {
+  const run = requireRun(await readRun(runId));
+  const template = selectedTemplate.trim();
+
+  if (!template) {
+    throw new Error('selected_template is required.');
+  }
+
+  if (!ALLOWED_VISUAL_TEMPLATES.has(template)) {
+    throw new Error(`Unsupported chart template: ${template}.`);
+  }
+
+  const option = findChartTypeOption(run, template);
+  const knownOptions = run.selected_candidate?.chart_type_options ?? [];
+  if (knownOptions.length > 0 && !option) {
+    throw new Error('Selected chart template was not found on this run.');
+  }
+
+  return writeRun({
+    ...run,
+    status: 'generating',
+    selected_chart_template: template,
+    selected_chart_rationale: option?.rationale || '',
+    generation_steps: run.generation_steps.map((step) =>
+      step.id === 'awaiting_chart_type_selection'
+        ? { ...step, status: 'done', microStatus: undefined }
+        : step
+    ),
+    logs: [
+      ...run.logs,
+      { at: now(), message: `Selected chart type: ${template}${option?.rationale ? ` - ${option.rationale}` : ''}` },
+    ],
   });
 }
 
@@ -1966,30 +2350,35 @@ export async function generatePost(runId: string) {
       throw new Error('No selected candidate to generate from.');
     }
     const selectedCandidate = run.selected_candidate;
-    const endpoint = normalizeCrustdataEndpoint(selectedCandidate.crustdata_query.endpoint);
-    if (!isUsableCrustdataEndpoint(endpoint)) {
-      throw new Error(`Crustdata endpoint ${endpoint} has not been verified for this API key.`);
-    }
 
-    run = await writeRun({ ...run, status: 'generating', error: undefined });
-    run = await writeRun(updateStep(run, 'fetching_data', 'running', 'Calling Crustdata API.'));
+    if (!run.data || !run.caption) {
+      const endpoint = normalizeCrustdataEndpoint(selectedCandidate.crustdata_query.endpoint);
+      if (!isUsableCrustdataEndpoint(endpoint)) {
+        throw new Error(`Crustdata endpoint ${endpoint} has not been verified for this API key.`);
+      }
 
-    const rawData = await callCrustdata(
-      endpoint,
-      selectedCandidate.crustdata_query.params
-    );
+      run = await writeRun({ ...run, status: 'generating', error: undefined });
+      run = await writeRun(updateStep(run, 'fetching_data', 'running', 'Calling Crustdata API.'));
 
-    await writeRunArtifact(runId, 'crustdata-response.json', JSON.stringify(rawData, null, 2));
-    if (!hasCrustdataUsableData(endpoint, rawData)) {
-      throw new Error(noUsableDataMessage(endpoint));
-    }
+      const rawData = await callCrustdata(
+        endpoint,
+        selectedCandidate.crustdata_query.params
+      );
 
-    run = await writeRun(updateStep(run, 'fetching_data', 'done'));
-    run = await writeRun(updateStep(run, 'finalizing_data', 'running', 'Asking Claude to normalize chart data.'));
+      await writeRunArtifact(runId, 'crustdata-response.json', JSON.stringify(rawData, null, 2));
+      if (!hasCrustdataUsableData(endpoint, rawData)) {
+        throw new Error(noUsableDataMessage(endpoint));
+      }
 
-    const baseKnowledge = await readRuntimeKnowledge(['base']);
-    const shapedResponse = await callLoggedAnthropicFull('stage_5_caption', runId, `Selected candidate:
+      run = await writeRun(updateStep(run, 'fetching_data', 'done'));
+      run = await writeRun(updateStep(run, 'finalizing_data', 'running', 'Asking Claude to normalize chart data.'));
+
+      const baseKnowledge = await readRuntimeKnowledge(['base']);
+      const shapedResponse = await callLoggedAnthropicFull('stage_5_caption', runId, `Selected candidate:
 ${JSON.stringify(selectedCandidate, null, 2)}
+
+Chart type options from Stage 2:
+${JSON.stringify(selectedCandidate.chart_type_options ?? [], null, 2)}
 
 Raw Crustdata response:
 ${JSON.stringify(rawData, null, 2)}
@@ -1999,7 +2388,7 @@ Normalize the raw response into chart-ready post data and write the social capti
 Requirements:
 - Use only data that is present in the raw Crustdata response.
 - If the original candidate cannot be supported exactly, adjust the title, subtitle, chart data, and caption to what the returned data actually supports.
-- Shape the chart data for the selected visual_template:
+- Shape the chart data for the rank-1 recommended visual_template for now. The user may choose one of the other chart_type_options before image generation, so keep the normalized data compact and compatible with the stated options when possible.
   - ranked_horizontal_bar, ranked_horizontal_bar_with_icons, vertical_bar_comparison, diverging_horizontal_bar: use rows[{label,value,color?}]. Sort ranked rows descending; keep signed values for diverging rows.
   - single_line_timeseries and annotated_line_timeseries: use points[{date,value}] and optional annotations[{date,label,sublabel?}].
   - single_line_timeseries_with_annotations: use points[{date,value}] plus annotations[{date,label,sublabel?}].
@@ -2007,36 +2396,66 @@ Requirements:
   - stacked_horizontal_bar and donut_chart: use segments[{label,value,count?,percent?,color?}] plus total_annotation or donut_hole_total/donut_hole_label as appropriate.
   - slope_chart: use entities[{entity,brand_color_hex?,start_value,end_value}] plus start_time_label and end_time_label.
   - scatter_plot: use entities[{entity,brand_color_hex?,x,y}] plus x_axis_label and y_axis_label.
+- For ratio/efficiency/per-X questions, compute the derived ratio from the raw metrics before writing chart data. The chart data must include the computed ratios as the primary values, not just the raw numerator and denominator.
 - Include a compact rows summary when it is natural, but do not collapse multi-line, slope, scatter, or segment data into rows only.
 - Keep all numeric series compact and directly renderable by the selected visual template.
 - Use "Data from: Crustdata" as the footer unless the runtime knowledge requires a more specific Crustdata attribution.
 - Write a 2-3 sentence caption in Crustdata's voice with a clear hook and the key data takeaway.
 - Submit the result through the submit_generated_post tool.`, {
-      system: cachedRuntimeSystem(
-        baseKnowledge,
-        ['base'],
-        'You are Stage 5 of Newsroom: normalize Crustdata API output into chart-ready post data and a caption.'
-      ),
-      maxTokens: 2048,
-      temperature: 0.1,
-      tools: generatedPostTool('Submit chart-ready post data and the caption for the selected Crustdata candidate.'),
-      toolChoice: { type: 'tool', name: GENERATED_POST_TOOL_NAME },
-    });
+        system: cachedRuntimeSystem(
+          baseKnowledge,
+          ['base'],
+          'You are Stage 5 of Newsroom: normalize Crustdata API output into chart-ready post data and a caption.'
+        ),
+        maxTokens: 2048,
+        temperature: 0.1,
+        tools: generatedPostTool('Submit chart-ready post data and the caption for the selected Crustdata candidate.'),
+        toolChoice: { type: 'tool', name: GENERATED_POST_TOOL_NAME },
+      });
 
-    const shaped = await getGeneratedPostToolInput(
-      'stage_5_caption',
-      runId,
-      shapedResponse.response
-    );
+      const shaped = await getGeneratedPostToolInput(
+        'stage_5_caption',
+        runId,
+        shapedResponse.response
+      );
 
-    await writeRunArtifact(runId, 'data.json', JSON.stringify(shaped.data, null, 2));
-    run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
+      await writeRunArtifact(runId, 'data.json', JSON.stringify(shaped.data, null, 2));
+      run = await writeRun({ ...updateStep(run, 'finalizing_data', 'done'), data: shaped.data, caption: shaped.caption });
+    }
+
+    if (!run.selected_chart_template) {
+      run = await writeRun(
+        updateStep(
+          run,
+          'awaiting_chart_type_selection',
+          'running',
+          'Pick a chart type to continue.'
+        )
+      );
+      return writeRun({
+        ...run,
+        status: 'awaiting_chart_type_selection',
+        logs: [...run.logs, { at: now(), message: 'Data finalized. Awaiting chart-type selection.' }],
+      });
+    }
+
+    const selectedTemplate =
+      run.selected_chart_template ||
+      selectedCandidate.visual_template ||
+      selectedCandidate.matched_visual ||
+      '';
+    if (!run.data) {
+      throw new Error('No chart-ready data exists for image generation.');
+    }
+
+    run = await writeRun({ ...run, status: 'generating', error: undefined });
+    run = await writeRun(updateStep(run, 'awaiting_chart_type_selection', 'done'));
     run = await writeRun(updateStep(run, 'generating_image', 'running', 'Generating the post image.'));
 
     const imageArtifact = await createPostImageArtifact(
       runId,
-      shaped.data,
-      selectedCandidate.visual_template || selectedCandidate.matched_visual || ''
+      run.data,
+      selectedTemplate
     );
 
     return writeRun({
@@ -2101,7 +2520,10 @@ Requirements:
     const imageArtifact = await createPostImageArtifact(
       runId,
       revised.data,
-      run.selected_candidate?.visual_template || run.selected_candidate?.matched_visual || ''
+      run.selected_chart_template ||
+        run.selected_candidate?.visual_template ||
+        run.selected_candidate?.matched_visual ||
+        ''
     );
 
     return writeRun({
@@ -2148,13 +2570,21 @@ export async function saveRun(runId: string) {
 
   const usedTemplate =
     saved.visual_template?.trim() ||
+    saved.selected_chart_template?.trim() ||
     saved.selected_candidate?.visual_template?.trim() ||
     saved.selected_candidate?.matched_visual?.trim() ||
     '';
+  let mutated = false;
   if (usedTemplate) {
     await recordTemplateUsed(runId, usedTemplate);
-    return requireRun(await readRun(runId));
+    mutated = true;
   }
 
-  return saved;
+  const steeringInput = saved.steering_input?.trim();
+  if (steeringInput) {
+    await recordSteering(runId, steeringInput);
+    mutated = true;
+  }
+
+  return mutated ? requireRun(await readRun(runId)) : saved;
 }

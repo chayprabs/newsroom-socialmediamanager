@@ -10,7 +10,20 @@ export function TopNav() {
   const router = useRouter();
   const [isProfileOpen, setIsProfileOpen] = useState(false);
 
-  const isActive = (path: string) => pathname === path;
+  const isActive = (path: string) => {
+    if (path === '/dashboard') {
+      return (
+        pathname === '/dashboard' ||
+        pathname === '/generating' ||
+        pathname === '/generating-progress' ||
+        pathname === '/pick-idea' ||
+        pathname === '/review' ||
+        pathname.startsWith('/runs/')
+      );
+    }
+
+    return pathname === path;
+  };
   const handleSignOut = async () => {
     setIsProfileOpen(false);
     await fetch('/api/auth/logout', { method: 'POST' });
