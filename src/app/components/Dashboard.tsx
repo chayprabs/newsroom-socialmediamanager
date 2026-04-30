@@ -6,6 +6,7 @@ import type { RunSummary } from '@/lib/types';
 import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { RunCard } from './RunCard';
+import { storeRun } from './runBrowserStore';
 
 const SUGGESTION_SEEDS = [
   'AI hiring',
@@ -100,6 +101,10 @@ export function Dashboard() {
         body: JSON.stringify(trimmedSteering ? { steering_input: trimmedSteering } : {}),
       });
       const data = await response.json();
+      if (!response.ok) {
+        throw new Error(typeof data.error === 'string' ? data.error : 'Could not create run.');
+      }
+      storeRun(data.run);
       router.push(`/generating?runId=${data.run.run_id}`);
     } catch (error) {
       setIsCreating(false);

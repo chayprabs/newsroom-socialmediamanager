@@ -7,6 +7,7 @@ import type { ChartDatum, ChartEntitySeries, ChartTypeOption, GeneratedPostData 
 import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
+import { requestRunSnapshot } from './runBrowserStore';
 
 type PreviewRow = {
   label: string;
@@ -367,7 +368,7 @@ export function ChartTypePicker() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const runId = params?.id ?? null;
-  const { run, isLoading, error } = useRunState(runId);
+  const { run, setRun, isLoading, error, setError } = useRunState(runId);
   const [selectedTemplate, setSelectedTemplate] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -401,12 +402,22 @@ export function ChartTypePicker() {
   const handleGeneratePost = async () => {
     if (!runId || !selectedTemplate || isSubmitting) return;
     setIsSubmitting(true);
-    await fetch(`/api/runs/${runId}/chart-type`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ selected_template: selectedTemplate }),
-    });
-    router.push(`/generating-progress?runId=${runId}`);
+    try {
+      const response = await fetch(`/api/runs/${runId}/chart-type`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selected_template: selectedTemplate, run: requestRunSnapshot(runId, run) }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof data.error === 'string' ? data.error : 'Could not select chart type.');
+      }
+      if (data.run) setRun(data.run);
+      router.push(`/generating-progress?runId=${runId}`);
+    } catch (chartTypeError) {
+      setError(chartTypeError instanceof Error ? chartTypeError.message : 'Could not select chart type.');
+      setIsSubmitting(false);
+    }
   };
 
   return (

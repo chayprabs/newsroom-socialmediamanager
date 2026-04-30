@@ -6,6 +6,7 @@ import { Loader2 } from 'lucide-react';
 import { TopNav } from './TopNav';
 import { useRunState } from './useRunState';
 import { DebugBundle } from './DebugBundle';
+import { requestRunSnapshot, storeRun } from './runBrowserStore';
 
 export function GeneratingPost() {
   const router = useRouter();
@@ -25,7 +26,10 @@ export function GeneratingPost() {
     setIsStarting(true);
     fetch('/api/runs', { method: 'POST' })
       .then((response) => response.json())
-      .then((data) => router.replace(`/generating?runId=${data.run.run_id}`))
+      .then((data) => {
+        storeRun(data.run);
+        router.replace(`/generating?runId=${data.run.run_id}`);
+      })
       .catch(() => setError('Could not start a new run.'))
       .finally(() => setIsStarting(false));
   }, [isStarting, router, runId, setError]);
@@ -34,7 +38,11 @@ export function GeneratingPost() {
     if (!runId || hasStartedDiscovery.current) return;
     hasStartedDiscovery.current = true;
 
-    fetch(`/api/runs/${runId}/discover`, { method: 'POST' })
+    fetch(`/api/runs/${runId}/discover`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run: requestRunSnapshot(runId, run) }),
+    })
       .then(async (response) => {
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -53,7 +61,7 @@ export function GeneratingPost() {
       .catch((discoveryError) =>
         setError(discoveryError instanceof Error ? discoveryError.message : 'Idea discovery failed.')
       );
-  }, [router, runId, setError, setRun]);
+  }, [router, run, runId, setError, setRun]);
 
   useEffect(() => {
     if (run?.status === 'awaiting_selection') {

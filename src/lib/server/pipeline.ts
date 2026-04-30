@@ -1670,6 +1670,7 @@ async function createPostImageArtifact(
       imagePath,
       image.exportSize
     );
+    const finalImage = await fs.readFile(imagePath);
 
     if (image.revisedPrompt) {
       await writeRunArtifact(runId, 'openai-revised-image-prompt.txt', image.revisedPrompt);
@@ -1695,6 +1696,7 @@ async function createPostImageArtifact(
       filename,
       mimeType: 'image/png',
       model: image.model,
+      dataUrl: `data:image/png;base64,${finalImage.toString('base64')}`,
       logMessage: image.isLandscape
         ? `Generated landscape image with OpenAI ${image.model} at ${image.size}; Stage 4c applied footer from ${footerOverlay.footerSource}.`
         : `Generated image with OpenAI ${image.model} at ${image.size}, exported ${image.exportSize}, and applied Stage 4c footer from ${footerOverlay.footerSource}.`,
@@ -1708,6 +1710,7 @@ async function createPostImageArtifact(
   const filename = 'post.png';
   const imagePath = path.join(getRunDir(runId), filename);
   const { result: footerOverlay } = await overlayFooterForRun(runId, rawImagePath, imagePath);
+  const finalImage = await fs.readFile(imagePath);
   logStageUsage('stage_4_image', runId, { model: 'local-svg-fallback' });
   await appendRunArtifact(
     runId,
@@ -1728,6 +1731,7 @@ async function createPostImageArtifact(
     filename,
     mimeType: 'image/png',
     model: 'local-svg-fallback',
+    dataUrl: `data:image/png;base64,${finalImage.toString('base64')}`,
     logMessage: `Rendered local SVG fallback because OPENAI_API_KEY is not configured; Stage 4c applied footer from ${footerOverlay.footerSource}.`,
   };
 }
@@ -2466,6 +2470,7 @@ Requirements:
       image_filename: imageArtifact.filename,
       image_mime_type: imageArtifact.mimeType,
       image_model: imageArtifact.model,
+      image_data_url: imageArtifact.dataUrl,
       logs: [
         ...run.logs,
         { at: now(), message: imageArtifact.logMessage },
@@ -2536,6 +2541,7 @@ Requirements:
       image_filename: imageArtifact.filename,
       image_mime_type: imageArtifact.mimeType,
       image_model: imageArtifact.model,
+      image_data_url: imageArtifact.dataUrl,
       error: undefined,
       logs: [
         ...run.logs,

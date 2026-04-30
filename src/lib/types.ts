@@ -176,6 +176,7 @@ export interface RunState {
   image_filename?: string;
   image_mime_type?: string;
   image_model?: string;
+  image_data_url?: string;
   usage_summary?: UsageSummary;
   saved_at?: string;
   /**

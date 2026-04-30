@@ -6,6 +6,7 @@ import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
 import { shouldShowTemplateDiversityBanner } from './templateDiversity';
+import { requestRunSnapshot } from './runBrowserStore';
 
 /**
  * Render a snake_case visual_template id as a human-readable label.
@@ -23,7 +24,7 @@ export function PickIdea() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const runId = searchParams?.get('runId') ?? null;
-  const { run, isLoading, error } = useRunState(runId);
+  const { run, setRun, isLoading, error, setError } = useRunState(runId);
   const [selectedId, setSelectedId] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const hasLimitedTemplateVariety = shouldShowTemplateDiversityBanner(run);
@@ -43,12 +44,22 @@ export function PickIdea() {
   const handleGeneratePost = async () => {
     if (!runId || !selectedId) return;
     setIsSubmitting(true);
-    await fetch(`/api/runs/${runId}/select`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ candidateId: selectedId }),
-    });
-    router.push(`/generating-progress?runId=${runId}`);
+    try {
+      const response = await fetch(`/api/runs/${runId}/select`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ candidateId: selectedId, run: requestRunSnapshot(runId, run) }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(typeof data.error === 'string' ? data.error : 'Could not select idea.');
+      }
+      if (data.run) setRun(data.run);
+      router.push(`/generating-progress?runId=${runId}`);
+    } catch (selectError) {
+      setError(selectError instanceof Error ? selectError.message : 'Could not select idea.');
+      setIsSubmitting(false);
+    }
   };
 
   return (

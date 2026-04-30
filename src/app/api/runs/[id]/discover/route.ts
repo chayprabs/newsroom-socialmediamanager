@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { discoverCandidates } from '@/lib/server/pipeline';
 import { readRun } from '@/lib/server/storage';
+import { ensureRunFromSnapshot, readJsonBody, type RunSnapshotBody } from '@/lib/server/runSnapshots';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,9 +25,10 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-export async function POST(_request: Request, context: RouteContext) {
+export async function POST(request: Request, context: RouteContext) {
   const { id } = await context.params;
-  const currentRun = await readRun(id);
+  const body = await readJsonBody<RunSnapshotBody>(request);
+  const currentRun = await ensureRunFromSnapshot(id, body.run);
 
   if (!currentRun) {
     return NextResponse.json({ error: 'Run not found.' }, { status: 404 });

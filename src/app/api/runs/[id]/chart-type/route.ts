@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { selectChartType } from '@/lib/server/pipeline';
+import { ensureRunFromSnapshot } from '@/lib/server/runSnapshots';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,6 +17,11 @@ export async function POST(request: NextRequest, context: RouteContext) {
 
   if (!selectedTemplate) {
     return NextResponse.json({ error: 'selected_template is required.' }, { status: 400 });
+  }
+
+  const run = await ensureRunFromSnapshot(id, body?.run);
+  if (!run) {
+    return NextResponse.json({ error: 'Run not found.' }, { status: 404 });
   }
 
   return NextResponse.json({ run: await selectChartType(id, selectedTemplate) });

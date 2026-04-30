@@ -7,12 +7,13 @@ import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
 import { DebugBundle } from './DebugBundle';
+import { requestRunSnapshot } from './runBrowserStore';
 
 export function GeneratingProgress() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const runId = searchParams?.get('runId') ?? null;
-  const { run, setRun, error, setError } = useRunState(runId);
+  const { run, setRun, isLoading, error, setError } = useRunState(runId);
   const hasStartedGeneration = useRef(false);
 
   useEffect(() => {
@@ -20,10 +21,18 @@ export function GeneratingProgress() {
   }, []);
 
   useEffect(() => {
-    if (!runId || hasStartedGeneration.current) return;
+    if (!runId || hasStartedGeneration.current || (isLoading && !run)) return;
+    if (run?.status === 'ready' || run?.status === 'awaiting_chart_type_selection' || run?.status === 'failed') {
+      return;
+    }
+
     hasStartedGeneration.current = true;
 
-    fetch(`/api/runs/${runId}/generate`, { method: 'POST' })
+    fetch(`/api/runs/${runId}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run: requestRunSnapshot(runId, run) }),
+    })
       .then(async (response) => {
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -44,7 +53,7 @@ export function GeneratingProgress() {
       .catch((generationError) =>
         setError(generationError instanceof Error ? generationError.message : 'Generation failed.')
       );
-  }, [router, runId, setError, setRun]);
+  }, [isLoading, router, run, runId, setError, setRun]);
 
   useEffect(() => {
     if (run?.status === 'ready') {
@@ -114,7 +123,11 @@ export function GeneratingProgress() {
               Newsroom is fetching data, shaping the chart, and rendering the post.
             </p>
 
-            {run ? (
+            {!run && visibleError ? (
+              <div className="w-full" style={{ maxWidth: '380px' }}>
+                <EmptyState title="Run unavailable" description={visibleError} />
+              </div>
+            ) : run ? (
               <div className="w-full" style={{ maxWidth: '380px', padding: '18px', border: '0.5px solid #E5E5E5', borderRadius: '10px', backgroundColor: '#FAFAFA' }}>
                 {run.generation_steps.map((step, index) => (
                   <div key={step.id} className="flex" style={{ gap: '12px', paddingBottom: index === run.generation_steps.length - 1 ? 0 : '22px' }}>

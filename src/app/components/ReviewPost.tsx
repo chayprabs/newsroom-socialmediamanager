@@ -6,6 +6,7 @@ import { Download, Loader2 } from 'lucide-react';
 import { TopNav } from './TopNav';
 import { EmptyState } from './EmptyState';
 import { useRunState } from './useRunState';
+import { requestRunSnapshot } from './runBrowserStore';
 
 export function ReviewPost() {
   const router = useRouter();
@@ -28,7 +29,11 @@ export function ReviewPost() {
   const handleSave = async () => {
     if (!runId) return;
     setIsWorking(true);
-    const response = await fetch(`/api/runs/${runId}/save`, { method: 'POST' });
+    const response = await fetch(`/api/runs/${runId}/save`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ run: requestRunSnapshot(runId, run) }),
+    });
     setIsWorking(false);
 
     if (response.ok) {
@@ -42,7 +47,7 @@ export function ReviewPost() {
     const response = await fetch(`/api/runs/${runId}/regenerate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ editPrompt }),
+      body: JSON.stringify({ editPrompt, run: requestRunSnapshot(runId, run) }),
     });
     const data = await response.json();
     if (response.ok && data.run) {
@@ -56,10 +61,10 @@ export function ReviewPost() {
   };
 
   const imageVersion = run?.updated_at ? `?version=${encodeURIComponent(run.updated_at)}` : '';
-  const imageUrl = runId ? `/api/runs/${runId}/image${imageVersion}` : '';
-  const downloadUrl = runId
+  const imageUrl = run?.image_data_url || (runId ? `/api/runs/${runId}/image${imageVersion}` : '');
+  const downloadUrl = run?.image_data_url || (runId
     ? `/api/runs/${runId}/image?download=1${run?.updated_at ? `&version=${encodeURIComponent(run.updated_at)}` : ''}`
-    : '';
+    : '');
 
   const PostImage = () => (
     <div
